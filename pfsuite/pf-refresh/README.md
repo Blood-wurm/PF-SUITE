@@ -26,6 +26,12 @@ Refreshing the whole drawing every time would lock up a big one.
 - **Selected:** the profile copies, pipes and leaders picked. A plan structure picked brings its copies.
 - **Drawing:** everything.
 
+**The command is split** (2026-10-30): `pfu:main` asks the scope;
+`pfu:run sc fmt pin` does the work and returns
+`(checked updated skipped erased)`. `fmt` / `pin` are the shared inputs; nil =
+share them drawing-wide (the command). PFSELFTEST groups 9-11 hand in their
+own, Line scope on their test lines, so no real block is written.
+
 The orphan erase, the plan check and the unplaced list cover the scope only.
 The shared drafter inputs are read drawing-wide whatever the scope. Each
 step's time is printed at the end (`MILLISECS`; `DATE` is only good to the

@@ -313,6 +313,24 @@
 ;; On a pipe label's leader: the handle of the pipe it belongs to.
 (setq *pf-xd-pipe*   "PIPE")
 
+;; ON A GRID ANCHOR (Jake, 2026-10-30: V6's own records, not V5's ledger).
+;; Written by PFSETUP (pf-grid); read by pfg:grid before V5's ledger.  The .cl
+;; is ALSO the CL attribute, so it shows in Properties -- the two must agree.
+(setq *pf-xd-cl*      "CL")          ; the .cl path
+(setq *pf-xd-pro-inv* "PRO-INV")     ; _INV .pro path
+(setq *pf-xd-pro-top* "PRO-TOP")     ; _TOP .pro path
+(setq *pf-xd-tin-ex*  "TIN-EXIST")   ; existing-ground .tin
+(setq *pf-xd-tin-des* "TIN-DESIGN")  ; DESIGN_* .tin
+(setq *pf-xd-mat*     "MATERIAL")    ; the line's pipe material
+(setq *pf-xd-sums*    "SUMS")        ; ((role . checksum) ...) of the .cl and .pros
+(setq *pf-xd-stamp*   "STAMP")       ; the anchor's OWN handle when made -- a copy
+                                     ; carries the original's, which is how it is caught
+
+;; RELEASED: on a profile copy, pipe or leader left behind when PFREMOVE took
+;; its grid's anchor away (Jake, 2026-10-30).  Every suite search skips it --
+;; it is a plain drawing object from then on.  Value: the removed grid's title.
+(setq *pf-xd-released* "RELEASED")
+
 ;; Part of every profile-copy and pipe fingerprint.  BUMP IT when a fix
 ;; changes how labels are built or placed: every copy and pipe then reads as
 ;; changed, and the next PFREFRESH redoes each one once.
@@ -452,13 +470,13 @@
 
 
 ;;; ==========================================================================
-;;; SECTION 7  --  V5 grid anchors  (READ ONLY)
+;;; SECTION 7  --  Grid anchors
 ;;; ==========================================================================
-;;; The profile grids in our drawings are registered by V5's PFSETUP, which
-;;; leaves a PF-ANCHOR block at each grid's lower-left corner.  V6 reads them
-;;; and never writes to them, so the same drawing still works in V5.
-;;; These are V5's names (pftools-cfg.lsp), copied exactly.  They are V5's
-;;; contract, not ours -- do not "tidy" them.
+;;; Every profile grid has an anchor block at its lower-left corner.  V5's
+;;; PFSETUP made PF-ANCHORs; V6's PFSETUP (pf-grid, 2026-10-30) makes
+;;; PFSUITE_ANCHORs and keeps their records as pf-record XDATA (SECTION 3).
+;;; Both kinds are read.  The attribute names are V5's (pftools-cfg.lsp),
+;;; copied exactly -- do not "tidy" them.
 
 ;; Block names an anchor may be inserted as.  PFSUITE_ANCHOR is the suite's
 ;; own name (Jake, 2026-10-15) -- same attributes and records, renamed.
@@ -481,10 +499,46 @@
 ;; seen in Properties and travels with the block.  If the stored path is gone
 ;; (project moved), the project's Alignments folder is searched for the same
 ;; name.  Read FIRST; V5's anchors have no such tag and fall back to their
-;; ledger's META record.  The anchor-creation command is not ported yet.
+;; ledger's META record.
 (setq *pf-anc-cl*     "CL")
 
-;; The anchor's own records live in a dictionary on the insert.
+;; Every tag a NEW anchor carries: all of V5's plus CL (Jake, 2026-10-30).
+;; PFSETUP checks the block definition has them before writing one.
+(setq *pf-anc-tags*
+  (list *pf-anc-line* *pf-anc-util* *pf-anc-sta0* *pf-anc-datum* *pf-anc-hplot*
+        *pf-anc-vplot* *pf-anc-width* *pf-anc-height* *pf-anc-cl*))
+
+;; New anchors: the block inserted, its layer (created no-plot, V5's colour,
+;; only if missing -- an existing layer is never repainted), and the icon's
+;; size.  The icon reads right at 1"=50', so the insert is scaled by
+;; HPLOT / *pf-anc-icon-hplot*, the same in X, Y and Z.  V5's rule.
+(setq *pf-anc-block*       "PFSUITE_ANCHOR")
+(setq *pf-anc-layer*       "PF-ANCHOR")
+(setq *pf-anc-layer-color* 152)
+(setq *pf-anc-icon-hplot*  50.0)
+
+;; The anchor check (V5's corner check): a grid LINE must pass within
+;; *pf-anc-probe-tol* of the anchor's corner (else the grid moved without it),
+;; and the grid top at the right edge must sit within *pf-anc-top-tol* of the
+;; recorded top (else the grid was stretched or redrawn).  Carlson's layers.
+(setq *pf-anc-grid-layers* "PF-GRID-MJR,PF-GRID-MNR,PF-HBOX")
+(setq *pf-anc-probe-tol*   0.05)
+(setq *pf-anc-top-tol*     0.5)
+
+;; PFSETUP's scan: grid names are text on this layer, "STORM LINE 'DA'"
+;; (V5's AUTO).  The utility is found by its KEYWORD in that text -- a
+;; FORCEMAIN line reads "FORCE MAIN".
+(setq *pf-name-layer* "PF-NAME")
+(setq *pf-types*      '("STORM" "SANITARY" "WATER" "FORCEMAIN" "GAS" "ELECTRIC"))
+(setq *pf-type-keywords* '(("FORCEMAIN" . "FORCE MAIN")))
+
+;; File-name conventions (V5's): Storm_CA.cl, Storm_CA_INV.pro / _TOP.pro,
+;; DESIGN_*.tin is the proposed surface, anything else the existing one.
+(setq *pf-pro-roles*         '("INV" "TOP"))
+(setq *pf-tin-design-prefix* "DESIGN_")
+
+;; V5's anchors keep their records in a dictionary on the insert (READ ONLY --
+;; the fallback when an anchor has no V6 records).
 ;; PFXLEDGER is the older name, read when PFLEDGER is not there.
 (setq *pf-anc-dict*        "PFLEDGER")
 (setq *pf-anc-dict-legacy* "PFXLEDGER")

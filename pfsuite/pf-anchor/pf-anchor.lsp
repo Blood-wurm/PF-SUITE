@@ -4,7 +4,9 @@
 ;;; Contract, API and rules: README.md beside this file.
 ;;;
 ;;; Reads PFSUITE_ANCHOR and V5's PF-ANCHOR / PF-GRIDANCHOR the same way.
-;;; Making an anchor is pf-grid's job (not written yet).
+;;; Making an anchor is pf-grid's job (PFSETUP, 2026-10-30).  A V6 anchor's
+;;; records are pf-record XDATA (CL, PRO-INV ... STAMP), read FIRST; V5's
+;;; ledger (META / FILES) is the fallback for the anchors V5 made.
 ;;;
 ;;; Every profile grid in our drawings already has a V5 PF-ANCHOR block at its
 ;;; lower-left corner.  It carries the grid (starting station, datum, plot
@@ -13,9 +15,9 @@
 ;;; inside the grid and everything comes from its anchor.
 ;;;
 ;;; NOTHING HERE WRITES.  Not to the anchor, not to its records, not to the
-;;; drawing.  That keeps the same drawing working in V5, and it is the one
-;;; exception to "only pf-record touches entity data": these are V5's
-;;; entities, and we only look at them.
+;;; drawing.  V5's ledger is read directly -- the one exception to "only
+;;; pf-record touches entity data": those are V5's records, and we only look.
+;;; V6's records are read through pf-record.
 ;;;
 ;;; Ported from V5 pfanchor.lsp (find / read / extents / ledger read / copy
 ;;; check), pftools-lib.lsp (the transform) and pfpro.lsp (which grid a point
@@ -117,8 +119,16 @@
   (if (and v (/= v "")) v))
 
 ;; (pfg:stamp anchor) -> the handle stamped on the anchor when it was made | nil
+;;   V6's STAMP first, then V5's META 302.
 (defun pfg:stamp (anchor)
-  (pfg:code 302 (pfg:rec anchor *pf-anc-meta*)))
+  (cond ((pfr:val-get anchor *pf-xd-stamp*))
+        ((pfg:code 302 (pfg:rec anchor *pf-anc-meta*)))))
+
+;; (pfg:v6 pairs key) -> that V6 record, nil when absent or blank.  pairs:
+;;   the anchor's pfr:xd-pairs, read once per grid.
+(defun pfg:v6 (pairs key / v)
+  (setq v (pfr:deser (cdr (assoc key pairs))))
+  (if (and v (/= v "")) v))
 
 ;; (pfg:copy-p anchor) -> T when this anchor is a COPY of another one.
 ;;   A copy keeps the original's stamp, so a copy shows up as TWO anchors
@@ -153,9 +163,10 @@
     (T (strcat v ".cl"))))
 
 ;; (pfg:grid anchor) -> grid alist | nil when its numbers cannot be read
-;;   The .cl: the anchor's CL attribute first (PFSUITE_ANCHOR), then the
-;;   ledger's META record (V5's anchors).
-(defun pfg:grid (anchor / ins ext at sta0 datum hp vp meta files)
+;;   The .cl: the anchor's CL attribute first (PFSUITE_ANCHOR), then its V6
+;;   record, then the ledger's META record (V5's anchors).  The files and
+;;   material: the V6 records, then V5's FILES.
+(defun pfg:grid (anchor / ins ext at sta0 datum hp vp meta files v6)
   (setq ins   (cdr (assoc 10 (entget anchor)))
         ext   (pfg:extents anchor)
         at    (pfg:atts anchor)
@@ -166,7 +177,8 @@
   (if (and ins (cadr ext) sta0 datum hp vp (> hp 0.0) (> vp 0.0))
     (progn
       (setq meta  (pfg:rec anchor *pf-anc-meta*)
-            files (pfg:rec anchor *pf-anc-files*))
+            files (pfg:rec anchor *pf-anc-files*)
+            v6    (pfr:xd-pairs anchor))
       (append
         (pfl:grid (car ins) (cadr ins) sta0 datum (/ hp vp))
         (list (cons 'topy       (+ (cadr ins) (cadr ext)))
@@ -175,12 +187,12 @@
               (cons 'vplot      vp)
               (cons 'line       (strcase (pfg:att *pf-anc-line* at)))
               (cons 'util       (strcase (pfg:att *pf-anc-util* at)))
-              (cons 'cl         (cond ((pfg:cl-att at)) ((pfg:code 1 meta))))
-              (cons 'pro-inv    (pfg:code 1 files))
-              (cons 'pro-top    (pfg:code 2 files))
-              (cons 'tin-exist  (pfg:code 3 files))
-              (cons 'tin-design (pfg:code 4 files))
-              (cons 'material   (pfg:code 5 files))
+              (cons 'cl         (cond ((pfg:cl-att at)) ((pfg:v6 v6 *pf-xd-cl*)) ((pfg:code 1 meta))))
+              (cons 'pro-inv    (cond ((pfg:v6 v6 *pf-xd-pro-inv*)) ((pfg:code 1 files))))
+              (cons 'pro-top    (cond ((pfg:v6 v6 *pf-xd-pro-top*)) ((pfg:code 2 files))))
+              (cons 'tin-exist  (cond ((pfg:v6 v6 *pf-xd-tin-ex*))  ((pfg:code 3 files))))
+              (cons 'tin-design (cond ((pfg:v6 v6 *pf-xd-tin-des*)) ((pfg:code 4 files))))
+              (cons 'material   (cond ((pfg:v6 v6 *pf-xd-mat*))     ((pfg:code 5 files))))
               (cons 'anchor     anchor))))))
 
 ;; (pfg:title g) -> "STORM 'CA'"

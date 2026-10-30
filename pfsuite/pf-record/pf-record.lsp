@@ -118,7 +118,10 @@
 ;; digit -- never bare text that could be mistaken for one of these keys.
 (setq *pfr-keys* (list *pf-xd-memb* *pf-xd-src* *pf-xd-schema*
                        *pf-xd-plan* *pf-xd-line* *pf-xd-pos* *pf-xd-seen*
-                       *pf-xd-pipe*))
+                       *pf-xd-pipe*
+                       *pf-xd-cl* *pf-xd-pro-inv* *pf-xd-pro-top* *pf-xd-tin-ex*
+                       *pf-xd-tin-des* *pf-xd-mat* *pf-xd-sums* *pf-xd-stamp*
+                       *pf-xd-released*))
 
 (defun pfr:xd-pairs (e / raw out key val s)
   (setq raw (pfr:xd-raw e))
@@ -215,6 +218,16 @@
 ;; SEEN -- the fingerprint of what the block was last built from (pfl:fingerprint)
 (defun pfr:stamp-get (e)    (pfr:deser (pfr:xd-get e *pf-xd-seen*)))
 (defun pfr:stamp-put (e fp) (pfr:xd-put e *pf-xd-seen* (pfr:ser fp)))
+
+;; RELEASED -- left behind when PFREMOVE took its grid away.  Every suite
+;; search skips it (pfr:all, pfp:all, pfp:all-leaders, pfs:copies-if).
+(defun pfr:released-p (e) (and (pfr:xd-get e *pf-xd-released*) T))
+(defun pfr:release (e title) (pfr:xd-put e *pf-xd-released* (pfr:ser title)))
+
+;; Typed accessors for any key: (pfr:val-get e key) / (pfr:val-put e key x)
+;;   The anchor's records (CL, PRO-INV ... STAMP) go through these.
+(defun pfr:val-get (e key)   (pfr:deser (pfr:xd-get e key)))
+(defun pfr:val-put (e key x) (pfr:xd-put e key (pfr:ser x)))
 
 ;; SCHEMA
 (defun pfr:schema-get (e / s)
@@ -333,7 +346,8 @@
 ;;   state would cost a COM call on every structure on every run.
 (defun pfr:view (e) (pfr:get e *pf-tag-view*))
 
-;; (pfr:all view) -> list of enames.  view nil = both.
+;; (pfr:all view) -> list of enames.  view nil = both.  A RELEASED block (its
+;;   grid removed by PFREMOVE) is not ours any more and is never returned.
 (defun pfr:all (view / ss i e out)
   (if (setq ss (ssget "_X" '((0 . "INSERT"))))
     (progn
@@ -342,10 +356,60 @@
         (setq e (ssname ss i))
         (if (and (pfr:ours-p e)
                  (or (null view)
-                     (= (strcase view) (strcase (if (pfr:view e) (pfr:view e) "")))))
+                     (= (strcase view) (strcase (if (pfr:view e) (pfr:view e) ""))))
+                 (not (pfr:released-p e)))
           (setq out (cons e out)))
         (setq i (1+ i)))))
   (reverse out))
+
+
+;;; ---- grid-less lines ("stubs") ----------------------------------------------
+;;; A line PFSETUP's scan has named but no grid shows yet.  Kept in the
+;;; drawing's own dictionary in V5's exact format, so pfm:stubs (and V5) read
+;;; them: key STUB_<TYPE>_<NAME>, data (1 .cl) (2 TYPE) (3 NAME) (4 INV .pro)
+;;; (5 TOP .pro), "" for none.  Drawing data, not entity data -- still only
+;;; written here.
+
+;; (pfr:stub-key ty name) -> "STUB_STORM_CA" -- V5's, characters a key can't
+;;   hold turned into "-"
+(defun pfr:stub-key (ty name / bad i c out)
+  (setq bad "\\/:*?\"<>|;,=` " out "" i 1
+        name (strcat (strcase ty) "_" (strcase name)))
+  (while (<= i (strlen name))
+    (setq c (substr name i 1)
+          out (strcat out (if (vl-string-search c bad) "-" c))
+          i (1+ i)))
+  (strcat *pf-stub-prefix* out))
+
+;; (pfr:nod create) -> the suite's drawing dictionary | nil
+(defun pfr:nod (create / sub)
+  (cond
+    ((setq sub (dictsearch (namedobjdict) *pf-nod-name*)) (cdr (assoc -1 sub)))
+    (create
+     (dictadd (namedobjdict) *pf-nod-name*
+              (entmakex '((0 . "DICTIONARY") (100 . "AcDbDictionary") (280 . 0) (281 . 1)))))))
+
+;; (pfr:stub-get ty name) -> ((1 . cl) (2 . TYPE) (3 . NAME) (4 . inv) (5 . top)) | nil
+(defun pfr:stub-get (ty name / d cur)
+  (if (and (setq d (pfr:nod nil)) (setq cur (dictsearch d (pfr:stub-key ty name))))
+    (cdr (member (assoc 100 cur) cur))))
+
+;; (pfr:stub-put ty name cl inv top) -> T   create or replace
+(defun pfr:stub-put (ty name cl inv top / d k cur)
+  (setq d (pfr:nod T) k (pfr:stub-key ty name))
+  (if (setq cur (dictsearch d k))
+    (progn (dictremove d k) (entdel (cdr (assoc -1 cur)))))
+  (dictadd d k (entmakex (list '(0 . "XRECORD") '(100 . "AcDbXrecord")
+                               (cons 1 (cond (cl) ("")))
+                               (cons 2 (strcase ty)) (cons 3 (strcase name))
+                               (cons 4 (cond (inv) (""))) (cons 5 (cond (top) (""))))))
+  T)
+
+;; (pfr:stub-del ty name) -> nil
+(defun pfr:stub-del (ty name / d k cur)
+  (if (and (setq d (pfr:nod nil)) (setq cur (dictsearch d (setq k (pfr:stub-key ty name)))))
+    (progn (dictremove d k) (entdel (cdr (assoc -1 cur)))))
+  (princ))
 
 
 ;;; ==========================================================================
@@ -412,6 +476,22 @@
       (entupd e)
       T)))
 
+;; (pfr:att-move e tag pt) -> T | nil   the label's point to pt, nothing else
+;;   changed (text, height, rotation, justification stay).  Puts back a row
+;;   moved by hand after a property change shifted it.
+(defun pfr:att-move (e tag pt / a ed now dx dy p)
+  (if (and (setq a (pfr:attr-ent e tag)) (setq now (pfr:att-pt e tag)))
+    (progn
+      (setq ed (entget a)
+            dx (- (car pt) (car now))
+            dy (- (cadr pt) (cadr now)))
+      (foreach k '(10 11)
+        (if (setq p (cdr (assoc k ed)))
+          (setq ed (subst (list k (+ (car p) dx) (+ (cadr p) dy) (caddr p)) (assoc k ed) ed))))
+      (entmod ed)
+      (entupd e)
+      T)))
+
 (defun pfr:pos-all (e) (pfr:deser (pfr:xd-get e *pf-xd-pos*)))
 
 ;; (pfr:default-pt e tag) -> WORLD (x y) where the block definition itself
@@ -462,16 +542,16 @@
 ;;   of pfr:moved-p, without the ATTSYNC test -- so it also serves a point
 ;;   that is not an attribute: the pipe's PFLEAD grip, kept in POS under
 ;;   its own name.  Never stored -> nil.
-(defun pfr:moved-from-p (e key now ref / pos was wref exp)
+(defun pfr:moved-from-p (e key now ref / pos was wref rode)
   (setq pos (cdr (assoc (strcase key) (pfr:pos-all e))))
   (if (and pos now ref (cddr pos))
     (progn
       (setq was  (list (car pos) (cadr pos))
             wref (list (caddr pos) (cadddr pos))
-            exp  (list (+ (car was)  (- (car ref)  (car wref)))
+            rode (list (+ (car was)  (- (car ref)  (car wref)))
                        (+ (cadr was) (- (cadr ref) (cadr wref)))))
       (and (> (distance was now) 0.01)
-           (> (distance exp now) 0.01)))))
+           (> (distance rode now) 0.01)))))
 
 ;; (pfr:pos-put e tag pt ref) -> T   remember where the tool put the label,
 ;;   and where ref (what it belongs to) was at that moment
@@ -537,9 +617,16 @@
          def)
         (old old)
         (T def)))
+    ;; every block holds the agreed value AND records it -- including the one
+    ;; it was typed on.  Its record still named the value before the edit,
+    ;; and "the last agreed value" is read off the first record found: a
+    ;; stale one rolled a disagreement back two changes (PFSELFTEST,
+    ;; 2026-10-27), and repeated "changed to" on every run.
     (foreach e ents
       (if (and (pfr:get e tag)
-               (or (/= (pfr:get e tag) new) (null (pfr:src-entry e tag))))
+               (or (/= (pfr:get e tag) new)
+                   (null (setq ent (pfr:src-entry e tag)))
+                   (/= (cond ((caddr ent)) ("")) new)))
         (progn (pfr:put e tag new) (pfr:src-put e tag *pf-src-rule* new))))
     (setq out (cons (cons tag new) out)))
   (cons out (reverse notes)))

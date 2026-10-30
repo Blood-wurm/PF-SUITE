@@ -419,15 +419,18 @@
             (setq i (1+ i)))))))
   (reverse out))
 
-;; (pfm:tree lines) -> (rows . index)
+;; (pfm:tree lines ents) -> (rows . index)
+;;   ents:  the structures to number -- nil = every one in the drawing, plus
+;;          the count-only blocks.  PFSELFTEST hands its own test blocks, on
+;;          its own test lines, so nothing real is counted or written.
 ;;   rows:  ((ename hits near other) ...)  other = T for a *pf-count-only*
 ;;          block: it takes its number on the line but is never named
 ;;   index: ((lname station ...) ...) stations climbing.  vl-sort-i, not
 ;;          vl-sort: vl-sort may drop equal numbers, and two structures at
 ;;          one station must both count.
-(defun pfm:tree (lines / others r u near rows idx c)
-  (setq others (pfm:others))
-  (foreach e (append (pfm:structures) others)
+(defun pfm:tree (lines ents / others r u near rows idx c)
+  (setq others (if (null ents) (pfm:others)))
+  (foreach e (cond (ents) ((append (pfm:structures) others)))
     (setq r    (pfm:hits (cdr (assoc 10 (entget e))) lines)
           ;; a near miss on ANOTHER utility's line is a crossing, not news
           u    (if (car r) (nth 3 (car (car r))))

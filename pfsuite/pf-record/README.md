@@ -15,16 +15,21 @@
   - `SCHEMA`
   - `PLAN`, `LINE`: a profile copy's link back to its plan structure
   - `POS`: where a label was last put
+  - on a grid anchor (2026-10-30): `CL`, `PRO-INV`, `PRO-TOP`, `TIN-EXIST`, `TIN-DESIGN`, `MATERIAL`, `SUMS`, `STAMP`
+  - `RELEASED`: left behind by PFREMOVE; every suite search skips it
+- **The drawing's own dictionary:** the grid-less line stubs, in V5's format.
 
 ## Public API
 
 - **Attributes:** `pfr:attr-ent`, `pfr:get`, `pfr:put`, `pfr:att-style`, `pfr:display-name`, `pfr:tags-ok-p`
-- **Stored data:** `pfr:xd-pairs`, `pfr:xd-get`, `pfr:xd-put`, `pfr:ser`, `pfr:deser`, `pfr:memb-get`, `pfr:memb-put`, `pfr:schema-get`, `pfr:schema-put`
+- **Stored data:** `pfr:xd-pairs`, `pfr:xd-get`, `pfr:xd-put`, `pfr:ser`, `pfr:deser`, `pfr:val-get`, `pfr:val-put`, `pfr:memb-get`, `pfr:memb-put`, `pfr:schema-get`, `pfr:schema-put`
+- **Released (PFREMOVE):** `pfr:released-p`, `pfr:release`. `pfr:all` never returns a released block.
+- **Line stubs:** `pfr:stub-get`, `pfr:stub-put`, `pfr:stub-del` (key `STUB_<TYPE>_<NAME>`, V5's exact format, read by `pfm:stubs`)
 - **Tool value vs hand-typed:** `pfr:src-entry`, `pfr:src-get`, `pfr:src-put`, `pfr:refresh`, `pfr:assert`
 - **Finding blocks:**
   - `pfr:row-for`: the exact name, or the name plus a number size. Never matched by prefix.
   - `pfr:size-of`, `pfr:ours-p`, `pfr:view`, `pfr:all`, `pfr:read`, `pfr:val`
-- **Label positions:** `pfr:att-pt`, `pfr:att-place`, `pfr:moved-p`, `pfr:pos-put`, and `pfr:moved-from-p` (the same "moved by hand?" test for any remembered point, such as the pipe's `PFLEAD` grip)
+- **Label positions:** `pfr:att-pt`, `pfr:att-place`, `pfr:att-move` (the point only -- text, height, rotation and justification untouched), `pfr:moved-p`, `pfr:pos-put`, and `pfr:moved-from-p` (the same "moved by hand?" test for any remembered point, such as the pipe's `PFLEAD` grip)
 - **Shared drafter inputs:**
   - `pfr:sync-inputs`: one copy of the logic for the structure's inputs (PFSTAPRE etc.) and the pipe's (PFLENPRE etc.). A new value typed on any block goes to all of them. Two different new values are reported and neither is applied. A value still at the block's own default is not counted as an edit.
   - `pfr:input`: reads one input's value.

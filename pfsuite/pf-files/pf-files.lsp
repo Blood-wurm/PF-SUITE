@@ -62,13 +62,13 @@
   (if (pff:dir-p d) d))
 
 ;; (pff:dir ft) -> the folder a dialog for this file type should open in | nil
-(defun pff:dir (ft / std last)
+(defun pff:dir (ft / std prev)
   (setq std  (pff:std-dir ft)
-        last (pff:last-dir ft))
+        prev (pff:last-dir ft))
   (cond
-    ((and *pf-dir-last-first* last) last)
+    ((and *pf-dir-last-first* prev) prev)
     (std std)
-    (last last)
+    (prev prev)
     ((pff:root))))
 
 ;; (pff:remember ft path) -> nil   record the folder of a file just chosen

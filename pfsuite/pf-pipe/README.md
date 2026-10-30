@@ -27,8 +27,13 @@
 ## Public API
 
 `pfp:sizes`, `pfp:mats`, `pfp:wall`, `pfp:all`, `pfp:ends`, `pfp:size`,
-`pfp:mat`, `pfp:sync`, `pfp:rows`, `pfp:update`, `pfp:to-world`,
-`pfp:to-local`, `pfp:pt-get`, `pfp:inside-p`
+`pfp:mat`, `pfp:sync`, `pfp:sync-in`, `pfp:rows`, `pfp:update`, `pfp:place`,
+`pfp:to-world`, `pfp:to-local`, `pfp:pt-get`, `pfp:inside-p`
+
+**The command is split** (2026-10-30): `pfp:main` asks (size, material, the
+two clicks); `pfp:place p1 p2 g size mat others` does the work. `others` is
+the pipes whose label inputs this one shares: `T` = every pipe (the command).
+PFSELFTEST group 10 calls `pfp:place` with its own pipes.
 
 ## Rules
 

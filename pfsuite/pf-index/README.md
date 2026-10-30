@@ -30,7 +30,7 @@ is measured against the file, not asked of Carlson:
 - `pfm:geom`, `pfm:where`: a `.cl`'s points with stations, and where a point is against them
 - `pfm:lines`: the line table, with notes on lines left out
 - `pfm:hits`: V5's membership rule. On a line means within 0.15' and inside its station range, ±0.01'. Measured against the read `.cl`
-- `pfm:tree`: every plan structure's lines, near misses, and the station index
+- `pfm:tree lines ents`: every plan structure's lines, near misses, and the station index. `ents` nil = every structure plus the count-only blocks; a list = only those (PFSELFTEST's test blocks)
 - `pfm:name`: the built name
 - `pfm:names-put`: **writes** the changed names; says what changed and what is near a line but not on it
 - `pfm:face`, `pfm:face-of`: which faces of a CBI a line goes through; the structure's one face, off its through-line

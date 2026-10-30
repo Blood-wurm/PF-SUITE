@@ -17,11 +17,12 @@ Everything more than one lisp needs, so it is called, never copied (Jake,
 
 ## Public API
 
-- **Messages:** `pfl:say`
+- **Messages:** `pfl:say`. While `*pfl-quiet*` is on, what it's given goes to `*pfl-heard*` (newest first) instead of the command line -- PFSELFTEST reads what a command said that way (2026-10-30)
 - **Angles and faces:** `pfl:readable`, `pfl:face-of`, `pfl:face-pair`
 - **Profile grid:** `pfl:grid`, `pfl:g`, `pfl:sta->x`, `pfl:elev->y`, `pfl:x->sta`, `pfl:y->elev`
 - **Numbers and strings:** `pfl:fix`, `pfl:fmt-sta`, `pfl:parse-sta`, `pfl:number-p`, `pfl:join`, `pfl:join-with`, `pfl:line-parts` ("STORM_AA" → ("STORM" . "AA"), shared by PFSTRUCT and the line tree), `pfl:subst-all`, `pfl:nospace`, `pfl:pad`, `pfl:split`
-- **Files:** `pfl:readlines`
+- **Files:** `pfl:readlines`, `pfl:file-sum` (a text file's checksum)
+- **File and grid names (V5's conventions):** `pfl:pro-parts` ("Storm_CA_INV.pro" → ("CA" . "INV")), `pfl:tin-design-p`, `pfl:type-keyword`, `pfl:sheet-type`, `pfl:sheet-name` ("STORM LINE 'DA'" → "DA")
 - **Entities:** `pfl:ins`, `pfl:handle`, `pfl:effname` (the real block name, never `*U47`; **every block-name comparison goes through it**), `pfl:bbox`, `pfl:text-len`
 - **Dynamic properties (read):** `pfl:dynprops`, `pfl:dynprop`, `pfl:prop-get`, `pfl:dynprop-get`, `pfl:allowed`, `pfl:visprop`
 - **Block geometry (read):**

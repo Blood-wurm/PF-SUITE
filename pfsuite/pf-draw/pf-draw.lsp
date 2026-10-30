@@ -114,6 +114,41 @@
 
 (defun pfd:erase (e) (if (and e (entget e)) (entdel e)))
 
+;; (pfd:layer name color noplot) -> name   CREATE-ONLY: an existing layer keeps
+;;   its colour and plot flag (V5's pfd:ensure-layer-c rule -- never repaint).
+(defun pfd:layer (name color noplot)
+  (if (not (tblsearch "LAYER" name))
+    (entmake (list '(0 . "LAYER") '(100 . "AcDbSymbolTableRecord") '(100 . "AcDbLayerTableRecord")
+                   (cons 2 name) '(70 . 0) (cons 62 color) (cons 290 (if noplot 0 1)))))
+  name)
+
+;; (pfd:rescale e sc) -> nil   the insert scaled sc, the same in X, Y and Z
+(defun pfd:rescale (e sc / obj)
+  (setq obj (vlax-ename->vla-object e))
+  (foreach f '(vla-put-xscalefactor vla-put-yscalefactor vla-put-zscalefactor)
+    (vl-catch-all-apply f (list obj sc)))
+  (princ))
+
+;; (pfd:insert-on name pt sc layer) -> ename | nil   pfd:insert, scaled sc in
+;;   X, Y and Z and put on layer
+(defun pfd:insert-on (name pt sc layer / e)
+  (if (setq e (pfd:insert name pt))
+    (progn
+      (pfd:rescale e sc)
+      (vl-catch-all-apply 'vla-put-layer (list (vlax-ename->vla-object e) layer))
+      e)))
+
+;; (pfd:to-back e) -> nil   draw order: behind everything (the anchor icon must
+;;   not cover the grid it marks -- V5's pfa:send-to-back)
+(defun pfd:to-back (e / echo)
+  (if (and e (entget e))
+    (progn
+      (setq echo (getvar "CMDECHO"))
+      (setvar "CMDECHO" 0)
+      (vl-catch-all-apply 'command-s (list "_.DRAWORDER" (ssadd e) "" "_Back"))
+      (setvar "CMDECHO" echo)))
+  (princ))
+
 ;; (pfd:pline verts layer) -> ename | nil    an open polyline in model space.
 ;;   verts: ((pt start-width end-width) ...) -- a segment's widths are on the
 ;;   vertex it starts from.

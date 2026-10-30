@@ -18,6 +18,12 @@ structure is on, and PFASSIGN writes, on each structure that changed:
 The run: **PFASSIGN, PFSTRUCT, PFREFRESH.** After a plan edit: PFASSIGN, then
 PFREFRESH.
 
+**The command is split** (2026-10-30): `pfa:main` asks the rims question;
+`pfa:run ents rims grids` does the work and returns
+`(assigned updated unchanged off skipped)`. `ents` nil = every plan structure;
+a list = number and write only those (PFSELFTEST group 7, on its own test
+lines).
+
 ## Rules
 
 - **It stays** (Jake, 2026-10-22), and owns the plan side; PFREFRESH is profile only (2026-10-27).

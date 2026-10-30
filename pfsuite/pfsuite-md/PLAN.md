@@ -283,7 +283,7 @@ V5's structure: one folder per module, a README beside each, and an
 | 10 | pf-struct | `pfs:` | `PFSTRUCT` (was PFDRAW) |
 | 11 | pf-pipe | `pfp:` | `PFPIPE`, Carlson pipe libraries, pipe labels |
 | 12 | pf-refresh | `pfu:` | `PFREFRESH`: the one refresh, profile side, changed blocks only |
-| reserved | pf-grid | | the grid and anchor command |
+| 13 | pf-grid | `pfn:` | `PFSETUP` (Scan / Anchor / Edit) and `PFREMOVE`: the grid anchors, ported from V5 (2026-10-30). Drawing the grid itself still waits on the grid standards |
 | last | pf-bench | `pfb:` | the workbench. **Not part of the suite** |
 
 **Shared code is called, never copied.** If two modules need a helper, it
@@ -310,11 +310,13 @@ Block Editor *and* written in `pf-cfg`, with no compiler between them.
 - **PFSTRUCT, PFPIPE, PFREFRESH,** the module refactor, the label standard.
 
 **Written, not yet seen in CAD**
-- **The line tree** (2026-10-22): numbers and names, written by PFREFRESH; the bend fix; `PFLINETEST`. Tests: section G of `FIRST-VERSION-TESTS.md`.
+- **The line tree** (2026-10-22): numbers and names, now written by PFASSIGN; the bend fix; `PFLINETEST`. Tests: section G of `FIRST-VERSION-TESTS.md`.
+- **Port step 2** (2026-10-30): PFSETUP, the anchor checks and PFREMOVE, in `pf-grid`. Anchors carry every V5 attribute plus CL, and their records as pf-record XDATA (V5's ledger still read). PFREMOVE erases the anchor only, releasing what was on the grid, or Everything. Tests: PFSELFTEST groups 5, 6 and 11. PFSELFTEST passed 77/77 on V6_Test (groups 1–5, 2026-10-30).
+- **PFSELFTEST does the testing** (Jake, 2026-10-30): "I want PFSELFTEST to do all of the testing." Each command is split into the part that asks (picks, keywords, the dialog) and the part that does the work given the answers (`pfa:run`, `pfs:run`, `pfu:run`, `pfp:place`, `pfn:scan-in`, `pfn:place-rec`, `pfn:edit-check` / `edit-write`). Groups 6–11 drive those on test lines of their own (STORM_YA / YB / YC, `.cl` files in `%TEMP%\PFSELFTEST`). FIRST-VERSION-TESTS.md is now PFSELFTEST plus a short by-hand list: the dialog, the clicks, UNDO, save / reopen, another drawing, ATTSYNC, and looking. Every new module comes with its group.
 
 **Next** — the V5 port order agreed 2026-10-22 (§11):
 1. The line tree, checked in CAD against V5's names on the same drawing.
-2. PFSETUP, the anchor checks and PFREMOVE.
+2. PFSETUP, the anchor checks and PFREMOVE. **Written 2026-10-30.**
 3. The palette.
 4. Inverts (workflow step 4).
 5. Rims (V5's PFGL → the ONGRADE rule, §3).
@@ -352,7 +354,7 @@ remaining structure types come in alongside.
 
 ## 10. Non-goals
 
-- No migration path from V5 records. V5's anchors and stubs are **read**, never converted.
+- No bulk migration from V5 records. V5's anchors and stubs are **read**; an anchor gets V6 records only when PFSETUP edits it.
 - No metric support beyond a guard that refuses.
 - No second UI surface: the palette and the one run dialog, nothing else.
 
@@ -371,9 +373,9 @@ block-based design forces changes.
 | V5 | What it does | V6 |
 |---|---|---|
 | **Line tree** (`pftools-lib` §1–3, `pfanchor` §4b–4c) | `.cl` reading, corridor and box tests, stubs, the line list, membership, numbering, names | **Ported** into pf-index, **with the bend fix.** V5's speed caches left out; V6's MEMB kept |
-| **PFSETUP** (+ `pfdialog.dcl` `pfsetup_main`) | Scans the sheet's `PF-NAME` text and registers stubs with their `.pro`; Anchor / Edit / New: the record dialog, two corner picks, writes the anchor | Port into a new `pf-setup`. Writes `PFSUITE_ANCHOR` with the CL attribute. Drops V5's labelling STATUS records |
-| **Anchor checks** (`corner-check`, `probe-corner`, `xform-moved-p`) | Warns when an anchor no longer matches its grid (V5's own open issue) | With PFSETUP; reported by PFREFRESH |
-| **PFREMOVE** | Removes a line's anchor | **Only the anchor is deleted** (Jake): the line just leaves the line table. Nothing else is erased |
+| **PFSETUP** (+ `pfdialog.dcl` `pfsetup_main`) | Scans the sheet's `PF-NAME` text and registers stubs with their `.pro`; Anchor / Edit / New: the record dialog, two corner picks, writes the anchor | **Ported** into `pf-grid` (2026-10-30), `[Scan/Anchor/Edit]` until the palette. Writes `PFSUITE_ANCHOR` with every V5 attribute + CL, records as pf-record XDATA (Jake: V6's own system). Stubs stay in V5's format. Drops V5's GEOM/twin caches, STATUS/pass records, index repair, XFORM |
+| **Anchor checks** (`corner-check`, `probe-corner`, `xform-moved-p`) | Warns when an anchor no longer matches its grid (V5's own open issue) | **Ported** (`pfn:checks`), plus copied anchor, `.cl` / `.pro` changed since setup, CL typed over. Printed by PFSETUP Scan and PFLINETEST |
+| **PFREMOVE** | Removes a line's anchor | **Ported.** `[Anchor/Everything] <Anchor>` (Jake): Anchor erases only the anchor and RELEASES what's on the grid (the suite leaves it alone); Everything erases that too. The line leaves the line table |
 | **PFADOPT** | Adopts anchors pasted from another drawing | Later; small |
 | **Palette** (`pfpalette.lsp`, `pfsuite.odcl`) | Registry and Commands tabs, the deferred-command channel | `pfp:` → `pfw:`. Fix V5's open bug first: the session's first deferred command dies at its own prompt |
 

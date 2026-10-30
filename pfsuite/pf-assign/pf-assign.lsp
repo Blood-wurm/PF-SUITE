@@ -39,11 +39,11 @@
                                   " either way.  [Yes/No] <No>: ")))
       (= ans "Yes"))))
 
-;; (pfa:rims grids) -> lines to report.  Every assigned structure's rim off
-;;   the TIN of the grid that shows it -- its first line, A-Z, whose grid has
-;;   one.  One TIN loaded at a time.
-(defun pfa:rims (grids / by e g tin c r out n-w n-k)
-  (foreach e (vl-remove-if-not 'pfr:memb-get (pfr:all *pf-view-plan*))
+;; (pfa:rims grids ents) -> lines to report.  Every assigned structure's rim
+;;   off the TIN of the grid that shows it -- its first line, A-Z, whose grid
+;;   has one.  One TIN loaded at a time.  ents: nil = every plan structure.
+(defun pfa:rims (grids ents / by e g tin c r out n-w n-k)
+  (foreach e (vl-remove-if-not 'pfr:memb-get (cond (ents) ((pfr:all *pf-view-plan*))))
     (setq tin nil)
     (foreach m (pfr:memb-get e)
       (if (and (null tin) (setq g (pfg:grid-for (car m) (cadr m) nil grids)))
@@ -73,8 +73,51 @@
   (append (reverse out)
           (list (strcat "  Rims: " (itoa n-w) " read off a TIN, " (itoa n-k) " typed by hand and kept."))))
 
-;; (pfa:main) -> nil   the command body, run inside pfd:run
-(defun pfa:main ( / grids rims lt lines tree res n-new n-upd n-same n-off n-skip)
+;; (pfa:run ents rims grids) -> (assigned updated unchanged off skipped)
+;;   The work, no questions -- what PFSELFTEST drives (2026-10-30).
+;;   ents: nil = every plan structure in the drawing; else only these are
+;;   numbered and written (PFSELFTEST's, on its own test lines).
+;;   rims: T = read them off the grids' TINs.
+(defun pfa:run (ents rims grids / lt lines tree res n-new n-upd n-same n-off n-skip)
+  (setq *pfd-stage* "building the line tree")
+  (setq lt    (pfm:lines)
+        lines (car lt))
+  (foreach s (cdr lt) (pfl:say s))
+  (setq tree (pfm:tree lines ents))
+
+  ;; names first, so everything after is reported under the new name
+  (setq *pfd-stage* "writing the names")
+  (foreach s (pfm:names-put tree) (pfl:say s))
+
+  (setq *pfd-stage* "assigning structures")
+  (setq n-new 0 n-upd 0 n-same 0 n-off 0 n-skip 0)
+  (foreach row (car tree)
+    (if (not (cadddr row))                         ; a headwall: counted only
+      (progn
+        (setq res (pfm:assign (car row) (pfm:own-hits (cadr row)) lines))
+        (foreach s (cdr res) (pfl:say s))
+        (cond ((eq (car res) 'new)     (setq n-new  (1+ n-new)))
+              ((eq (car res) 'updated) (setq n-upd  (1+ n-upd)))
+              ((eq (car res) 'same)    (setq n-same (1+ n-same)))
+              ((eq (car res) 'off)     (setq n-off  (1+ n-off)))
+              (T                       (setq n-skip (1+ n-skip)))))))
+
+  (if rims
+    (progn
+      (setq *pfd-stage* "reading rims")
+      (foreach s (pfa:rims grids ents) (pfl:say s))))
+
+  (pfl:say "")
+  (pfl:say (strcat "  " (itoa n-new) " assigned, " (itoa n-upd) " updated, "
+                   (itoa n-same) " unchanged, " (itoa n-off) " on no line, "
+                   (itoa n-skip) " skipped."))
+  (if (> (+ n-new n-upd) 0)
+    (pfl:say "  Next: PFSTRUCT places any not placed yet, then PFREFRESH."))
+  (list n-new n-upd n-same n-off n-skip))
+
+;; (pfa:main) -> nil   the command body, run inside pfd:run: the question,
+;;   then pfa:run over the whole drawing
+(defun pfa:main ( / grids rims)
   (pfc:load)
   (cond
     ((pfc:metric-p)
@@ -87,41 +130,7 @@
             rims  (pfa:ask-tins grids))
       (pfl:say "")
       (pfl:say "=== PFASSIGN  every plan structure, every line ===")
-
-      (setq *pfd-stage* "building the line tree")
-      (setq lt    (pfm:lines)
-            lines (car lt))
-      (foreach s (cdr lt) (pfl:say s))
-      (setq tree (pfm:tree lines))
-
-      ;; names first, so everything after is reported under the new name
-      (setq *pfd-stage* "writing the names")
-      (foreach s (pfm:names-put tree) (pfl:say s))
-
-      (setq *pfd-stage* "assigning structures")
-      (setq n-new 0 n-upd 0 n-same 0 n-off 0 n-skip 0)
-      (foreach row (car tree)
-        (if (not (cadddr row))                         ; a headwall: counted only
-          (progn
-            (setq res (pfm:assign (car row) (pfm:own-hits (cadr row)) lines))
-            (foreach s (cdr res) (pfl:say s))
-            (cond ((eq (car res) 'new)     (setq n-new  (1+ n-new)))
-                  ((eq (car res) 'updated) (setq n-upd  (1+ n-upd)))
-                  ((eq (car res) 'same)    (setq n-same (1+ n-same)))
-                  ((eq (car res) 'off)     (setq n-off  (1+ n-off)))
-                  (T                       (setq n-skip (1+ n-skip)))))))
-
-      (if rims
-        (progn
-          (setq *pfd-stage* "reading rims")
-          (foreach s (pfa:rims grids) (pfl:say s))))
-
-      (pfl:say "")
-      (pfl:say (strcat "  " (itoa n-new) " assigned, " (itoa n-upd) " updated, "
-                       (itoa n-same) " unchanged, " (itoa n-off) " on no line, "
-                       (itoa n-skip) " skipped."))
-      (if (> (+ n-new n-upd) 0)
-        (pfl:say "  Next: PFSTRUCT places any not placed yet, then PFREFRESH."))
+      (pfa:run nil rims grids)
       (pfl:say "  One UNDO takes this whole run back.")))
   (princ))
 

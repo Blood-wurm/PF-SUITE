@@ -6,7 +6,7 @@
 ;;; ONE command places every structure type (Jake, 2026-10-15).  Was PFDRAW.
 ;;;
 ;;; "PLACE STRUCTURES IN PROFILE" (Jake, 2026-10-16).  No grid pick:
-;;;   1. pushes the five drafter inputs (STA prefix etc.) drawing-wide
+;;;   1. pushes the drafter inputs (STA prefix etc.), per block type
 ;;;   2. grid by grid: every alpha block on the line with NO profile copy
 ;;;      yet gets one, on the grid that shows its station
 ;;;   3. writes each new copy's label rows, puts them at the grid top, and
@@ -28,14 +28,58 @@
 ;;; ==========================================================================
 ;;; SECTION 1  --  The drafter inputs, drawing-wide
 ;;; ==========================================================================
-;;; PFSTAPRE / PFSTASUF / PFCONPRE / PFCONSUF / PFELEVSUF live on every
-;;; structure and must agree.  Type a new one on ANY structure and the next run
-;;; pushes it to all of them.  Two different new values is a disagreement: it
-;;; is reported, and the old value stays until someone settles it.
+;;; PFSTAPRE / PFSTASUF / PFCONPRE / PFCONSUF / PFELEVPRE / PFELEVSUF live on
+;;; every structure and must agree WITHIN A BLOCK TYPE (Jake, 2026-10-27):
+;;; type a new one on any CBI and the next run pushes it to every CBI; a DBI
+;;; keeps its own.  Two different new values is a disagreement: it is
+;;; reported, and the old value stays until someone settles it.  Each type
+;;; starts from its own defaults (*pf-type-fmt* over *pf-fmt-defaults*).
+;;;
+;;; The inputs travel as FMTS: ((type . ((tag . value) ...)) ...).  Whatever
+;;; builds a row takes its own type's out with pfs:fmt-for.
 
-;; (pfs:sync-fmt) -> (fmt-alist . notes)   the shared logic, for structures
-(defun pfs:sync-fmt ()
-  (pfr:sync-inputs (pfr:all nil) *pf-tags-fmt* *pf-fmt-defaults* *pf-fmt-retired*))
+;; (pfs:type-of e) -> "CBI" -- the *pf-blocks* key of e's block | nil
+(defun pfs:type-of (e / row)
+  (if (setq row (pfr:row-for (pfl:effname e))) (vl-symbol-name (car row))))
+
+;; NEVER name a local after a built-in: AutoLISP keeps one value per symbol,
+;; so a local TYPE holding "CBI" made every (type x) inside the call "bad
+;; function: CBI" (PFSELFTEST, 2026-10-30).  Hence TY.
+
+;; (pfs:fmt-defaults ty) -> ((tag . default) ...) for that block type
+(defun pfs:fmt-defaults (ty / over)
+  (setq over (cdr (assoc ty *pf-type-fmt*)))
+  (mapcar '(lambda (d) (cond ((assoc (car d) over)) (d))) *pf-fmt-defaults*))
+
+;; (pfs:fmt-for e fmts) -> e's type's inputs.  A type no block of carried
+;;   (nothing synced) gets its defaults.
+(defun pfs:fmt-for (e fmts / ty)
+  (setq ty (pfs:type-of e))
+  (cond ((cdr (assoc ty fmts))) ((pfs:fmt-defaults ty))))
+
+;; (pfs:sync-fmt) -> (fmts . notes)   every structure in the drawing
+(defun pfs:sync-fmt () (pfs:sync-fmt-in (pfr:all nil)))
+
+;; (pfs:sync-fmt-in ents) -> (fmts . notes)   the shared logic, for these
+;;   structures, one block type at a time.  PFSELFTEST hands its own.
+(defun pfs:sync-fmt-in (ents / groups ty c res fmts notes)
+  (foreach e ents
+    (if (setq ty (pfs:type-of e))
+      (setq groups (if (setq c (assoc ty groups))
+                     (subst (cons ty (cons e (cdr c))) c groups)
+                     (cons (list ty e) groups)))))
+  (foreach g (reverse groups)
+    (setq res  (pfr:sync-inputs (cdr g) *pf-tags-fmt* (pfs:fmt-defaults (car g)) *pf-fmt-retired*)
+          fmts (cons (cons (car g) (car res)) fmts))
+    (foreach s (cdr res) (setq notes (cons (strcat "  [" (car g) "]" s) notes)))
+    ;; an input no block of this type carries yet -- its default is used
+    (foreach tag *pf-tags-fmt*
+      (if (not (vl-some '(lambda (e) (pfr:attr-ent e tag)) (cdr g)))
+        (setq notes (cons (strcat "  ** " (car g) " blocks have no " tag " attribute -- using \""
+                                  (pfr:input tag (pfs:fmt-defaults (car g)))
+                                  "\".  BEDIT the block, PFMKATT, then ATTSYNC.")
+                          notes)))))
+  (cons (reverse fmts) (reverse notes)))
 
 
 ;;; ==========================================================================
@@ -85,18 +129,21 @@
           (vl-sort (vl-remove-if '(lambda (m) (= (car m) lname)) memb)
                    '(lambda (a b) (< (car a) (car b))))))
 
-;; (pfs:rows plan fmt lname) -> ((tag . text) ...) for the six label rows
+;; (pfs:rows plan fmts lname) -> ((tag . text) ...) for the six label rows
 ;;   V5's pf:build-label-rows: one station row per line the structure is on
 ;;   (" =" on all but the last), then construction, second text, elevation.
 ;;   lname is the line of the grid being drawn: its row comes first.
 ;;     STA. 4+09.69 STORM LINE 'BA' =
 ;;     STA. 3+00.00 STORM LINE 'BC'
-;;     CONST. DRAINAGE MH BA-5/BC-1      no size; ends with PFNAME
-;;   The wording is a default -- a drafter types over any row that should
-;;   read differently, and it is kept (Jake, 2026-10-16).
-(defun pfs:rows (plan fmt lname / memb words sta-rows i n con elev rim out)
-  (setq memb  (pfs:memb-order (pfr:memb-get plan) lname)
-        words (cdr (assoc (pfr:get plan *pf-tag-type*) *pf-type-words*))
+;;     CONST. CURB BOX INLET BA-5/BC-1   PFCONPRE + PFNAME + PFCONSUF
+;;     G.L. 758.25                       PFELEVPRE + rim + PFELEVSUF
+;;   Built from the attributes ONLY -- no wording from a table (Jake,
+;;   2026-10-27).  PFTEXT2 is the drafter's: blank unless typed.  A blank
+;;   PFELEVPRE draws no elevation row.  A drafter types over any row that
+;;   should read differently, and it is kept (Jake, 2026-10-16).
+(defun pfs:rows (plan fmts lname / fmt memb sta-rows i n con elev rim out)
+  (setq fmt   (pfs:fmt-for plan fmts)
+        memb  (pfs:memb-order (pfr:memb-get plan) lname)
         n     (length memb)
         i     0)
   (foreach m memb
@@ -107,11 +154,12 @@
                                  (if (< i n) " =" ""))
                          sta-rows)))
   (setq sta-rows (reverse sta-rows)
-        con  (pfl:join (list (pfr:input *pf-tag-con-pre* fmt) (car words)
-                             (pfr:get plan *pf-tag-name*)))
+        con  (pfl:join (list (pfr:input *pf-tag-con-pre* fmt)
+                             (pfr:get plan *pf-tag-name*)
+                             (pfr:input *pf-tag-con-suf* fmt)))
         rim  (pfr:get plan *pf-tag-rim*)
-        elev (if (caddr words)
-               (pfl:join (list (caddr words)
+        elev (if (/= "" (vl-string-trim " " (pfr:input *pf-tag-elev-pre* fmt)))
+               (pfl:join (list (pfr:input *pf-tag-elev-pre* fmt)
                                (if (pfl:number-p rim) (pfl:fix (distof rim 2) 2) *pf-elev-placeholder*)
                                (pfr:input *pf-tag-elev-suf* fmt)))
                ""))
@@ -119,18 +167,19 @@
   (foreach tag (list "PFSTA1" "PFSTA2" "PFSTA3")
     (setq out (cons (cons tag (cond ((nth i sta-rows)) (""))) out) i (1+ i)))
   (reverse (append (list (cons "PFELEV" elev)
-                         (cons "PFTEXT2" (cond ((cadr words)) ("")))
+                         (cons "PFTEXT2" "")
                          (cons "PFCON" con))
                    out)))
 
-;; (pfs:copy-fp pe plan g fmt top) -> fingerprint of everything this profile
+;; (pfs:copy-fp pe plan g fmts top) -> fingerprint of everything this profile
 ;;   copy is built from, and of what the tool left on it.  The same answer
 ;;   next time = nothing changed = PFREFRESH leaves the copy alone.
 ;;   Built from: where the copy sits; the alpha block's lines, rim, name,
-;;   type, face and size; the shared inputs; the grid's numbers; the grid
-;;   top at this station; the station line's top; each label row's text and
-;;   position (so a row typed over, moved, or reset by ATTSYNC is noticed).
-(defun pfs:copy-fp (pe plan g fmt top / px)
+;;   type, face and size; its type's shared inputs (another type's change
+;;   leaves it alone); the grid's numbers; the grid top at this station; the
+;;   station line's top; each label row's text and position (so a row typed
+;;   over, moved, or reset by ATTSYNC is noticed).
+(defun pfs:copy-fp (pe plan g fmts top / px)
   (setq px (car (pfl:ins pe)))
   (pfl:fingerprint
     (list *pf-fp-ver*
@@ -139,18 +188,18 @@
           (mapcar '(lambda (tg) (pfr:get plan tg))
                   (list *pf-tag-rim* *pf-tag-name* *pf-tag-type* *pf-tag-face*))
           (vl-princ-to-string (pfl:dynprop-get (vlax-ename->vla-object plan) *pf-param-size*))
-          fmt
+          (pfs:fmt-for plan fmts)
           (mapcar '(lambda (k) (pfl:g k g)) '(leftx basey sta0 datum vscale hplot))
           (pfg:top-at px g top)
           (pfl:end-y pe 'top)
           (mapcar '(lambda (tg) (list (pfr:get pe tg) (pfr:att-pt pe tg))) *pf-tags-row*))))
 
-;; (pfs:struct-update pe plan g ctx fmt) -> notes
+;; (pfs:struct-update pe plan g ctx fmts) -> notes   fmts from pfs:sync-fmt
 ;;   Label rows, their place at the grid top, and the station line's top.
 ;;   Pipes play no part, so nothing about a pipe can stop a structure being
 ;;   drawn.  The barrel depth is the drafter's (PFDEPTH grip).
 (defun pfs:struct-update (pe plan g ctx fmt / notes rows r kept ht px gtop off gap
-                            base live i x res row1 moved)
+                            base live i x res row1 moved held)
   (setq *pfd-stage* "composing the label rows")
   (setq ht   (pfg:text-ht g)
         px   (car (pfl:ins pe))
@@ -160,7 +209,9 @@
         ;; moved by hand is left where it is, same as a pipe row)
         ;; measured against the copy's insertion point: rows that travelled
         ;; with the copy (a new rim, a re-station) were not moved by hand
-        moved (mapcar '(lambda (tg) (cons tg (pfr:moved-p pe tg (pfl:ins pe)))) *pf-tags-row*))
+        moved (mapcar '(lambda (tg) (cons tg (pfr:moved-p pe tg (pfl:ins pe)))) *pf-tags-row*)
+        ;; and where each of those is now, to put it back after the refit
+        held  (vl-remove nil (mapcar '(lambda (m) (if (cdr m) (cons (car m) (pfr:att-pt pe (car m))))) moved)))
   (if (> (length (pfr:memb-get plan)) 3)
     (setq notes (cons "      ** on more than 3 lines -- only 3 station rows fit" notes)))
 
@@ -202,6 +253,12 @@
   (if (/= res T) (setq notes (cons (strcat "      top: " res) notes)))
   ;; PFDEPTH is NOT touched: the barrel depth is the drafter's, set with its
   ;; grip (Jake, 2026-10-15).
+
+  ;; a row moved by hand goes back where the drafter left it: the refit
+  ;; rebuilds the insert, and a row can ride it (PFSELFTEST, 2026-10-30)
+  (foreach h held
+    (if (and (cdr h) (> (distance (pfr:att-pt pe (car h)) (cdr h)) 1e-6))
+      (pfr:att-move pe (car h) (cdr h))))
 
   ;; label rows -- V5's layout: rotated to read up, first row left of the
   ;; station line, the rest to its right.  Blank rows take no column.  A row
@@ -279,6 +336,84 @@
 ;;; SECTION 5  --  PFSTRUCT
 ;;; ==========================================================================
 
+;; (pfs:run plans grids top fmt) -> (placed already-placed skipped)
+;;   The work, no questions -- what PFSELFTEST drives (2026-10-30).
+;;   plans: the alpha blocks to place (on a line).  grids: pfg:usable.
+;;   top: pfg:top-lines.  fmt: from pfs:sync-fmt.
+(defun pfs:run (plans grids top fmt / res names nm copies done g lname m pe
+                  mine notes n-new n-have n-skip)
+  (setq n-new 0 n-have 0 n-skip 0)
+
+  ;; two alpha blocks with one name -- usually a COPY of one
+  (foreach e plans
+    (setq nm (pfr:get e *pf-tag-name*))
+    (if (and nm (/= nm ""))
+      (if (assoc nm names)
+        (pfl:say (strcat "  ** two alpha blocks are named " nm
+                         " -- was one copied?  Rename one in Properties."))
+        (setq names (cons (cons nm T) names)))))
+
+  ;; grid by grid: place each structure not placed yet, then label it
+  (setq copies (pfs:copies))
+  (foreach g grids
+    (setq lname (pfg:line-name g) mine nil)
+    (setq *pfd-stage* (strcat "placing the copies on " (pfg:title g)))
+    (foreach e plans
+      (if (and (setq m (assoc lname (pfr:memb-get e)))
+               (not (member (cons (pfl:handle e) lname) done))
+               (pfg:on-grid-p (cadr m) g))
+        (progn
+          (setq done (cons (cons (pfl:handle e) lname) done))
+          (cond
+            ;; already placed -- PFREFRESH's from here on
+            ((pfs:find-copy (pfl:handle e) lname copies)
+             (setq n-have (1+ n-have)))
+            ((not (pfl:number-p (pfr:get e *pf-tag-rim*)))
+             (setq n-skip (1+ n-skip)
+                   notes (cons (strcat "  " (pfr:display-name e) "  " lname "  STA " (pfl:fmt-sta (cadr m))
+                                       "  no rim -- type it on the alpha block (Properties), then PFSTRUCT again")
+                               notes)))
+            (T
+             (setq res (pfs:place nil e lname (cadr m) g))
+             (cond
+               ((null (car res))
+                (setq n-skip (1+ n-skip)
+                      notes (cons (strcat "  " (pfr:display-name e) "  " (cdr res)) notes)))
+               (T
+                (setq n-new (1+ n-new)
+                      mine  (cons (list (car res) e (cadr m) (cdr res)) mine)))))))))
+    (if mine
+      (progn
+        (pfl:say "")
+        (pfl:say (strcat "  " (pfg:title g) "   line " lname))
+        (foreach cp (reverse mine)
+          (setq res (pfd:try (strcat (pfr:display-name (cadr cp)) " labels")
+                             'pfs:struct-update
+                             (list (car cp) (cadr cp) g (list (cons 'top top)) fmt)))
+          (pfl:say (strcat "    " (pfr:display-name (cadr cp))
+                           "  STA " (pfl:fmt-sta (caddr cp))
+                           "  rim " (pfr:get (cadr cp) *pf-tag-rim*)
+                           (if (/= "" (cadddr cp)) (strcat "  " (cadddr cp)) "")))
+          (foreach s res (pfl:say s))))))
+
+  ;; on a line no grid shows at that station -- nothing to place it on
+  (foreach e plans
+    (foreach m (pfr:memb-get e)
+      (if (not (member (cons (pfl:handle e) (car m)) done))
+        (setq n-skip (1+ n-skip)
+              notes (cons (strcat "  " (pfr:display-name e) "  " (car m) "  STA " (pfl:fmt-sta (cadr m))
+                                  "  -- no grid shows this line at this station")
+                          notes)))))
+
+  (if notes (pfl:say ""))
+  (foreach s (reverse notes) (pfl:say s))
+  (pfl:say "")
+  (pfl:say (strcat "  " (itoa n-new) " placed, " (itoa n-have) " already placed (left alone"
+                   " -- PFREFRESH keeps them up to date), " (itoa n-skip) " skipped."))
+  (if (null plans)
+    (pfl:say "  No alpha blocks on any line yet -- run PFASSIGN first."))
+  (list n-new n-have n-skip))
+
 ;; (pfs:main) -> nil   the command body, run inside pfd:run
 ;;   "Place structures in profile" (Jake, 2026-10-16): every alpha block on a
 ;;   line that has NO profile copy yet gets one, on the grid that shows its
@@ -286,13 +421,11 @@
 ;;   to date and clears orphans/duplicates.
 ;;   No grid pick: every line in the drawing (the palette will hand it the
 ;;   one line clicked there).
-(defun pfs:main ( / grids top res fmt plans names nm copies done g lname m pe
-                    mine notes n-new n-have n-skip)
+(defun pfs:main ( / grids top res)
   (cond
     ((= 1 (getvar "BLOCKEDITOR")) (pfl:say "PFSTRUCT: close the Block Editor first."))
     (T
      (pfc:load)
-     (setq n-new 0 n-have 0 n-skip 0)
      (pfl:say "")
      (pfl:say "=== PFSTRUCT  place structures in profile ===")
 
@@ -304,80 +437,11 @@
 
      ;; 1. drafter inputs, drawing-wide
      (setq *pfd-stage* "pushing the drafter inputs")
-     (setq res (pfs:sync-fmt) fmt (car res))
+     (setq res (pfs:sync-fmt))
      (foreach s (cdr res) (pfl:say s))
 
-     ;; 2. the alpha blocks on a line
-     (setq plans (vl-remove-if-not 'pfr:memb-get (pfr:all *pf-view-plan*)))
-
-     ;; two alpha blocks with one name -- usually a COPY of one
-     (foreach e plans
-       (setq nm (pfr:get e *pf-tag-name*))
-       (if (and nm (/= nm ""))
-         (if (assoc nm names)
-           (pfl:say (strcat "  ** two alpha blocks are named " nm
-                            " -- was one copied?  Rename one in Properties."))
-           (setq names (cons (cons nm T) names)))))
-
-     ;; 3. grid by grid: place each structure not placed yet, then label it
-     (setq copies (pfs:copies))
-     (foreach g grids
-       (setq lname (pfg:line-name g) mine nil)
-       (setq *pfd-stage* (strcat "placing the copies on " (pfg:title g)))
-       (foreach e plans
-         (if (and (setq m (assoc lname (pfr:memb-get e)))
-                  (not (member (cons (pfl:handle e) lname) done))
-                  (pfg:on-grid-p (cadr m) g))
-           (progn
-             (setq done (cons (cons (pfl:handle e) lname) done))
-             (cond
-               ;; already placed -- PFREFRESH's from here on
-               ((pfs:find-copy (pfl:handle e) lname copies)
-                (setq n-have (1+ n-have)))
-               ((not (pfl:number-p (pfr:get e *pf-tag-rim*)))
-                (setq n-skip (1+ n-skip)
-                      notes (cons (strcat "  " (pfr:display-name e) "  " lname "  STA " (pfl:fmt-sta (cadr m))
-                                          "  no rim -- type it on the alpha block (Properties), then PFSTRUCT again")
-                                  notes)))
-               (T
-                (setq res (pfs:place nil e lname (cadr m) g))
-                (cond
-                  ((null (car res))
-                   (setq n-skip (1+ n-skip)
-                         notes (cons (strcat "  " (pfr:display-name e) "  " (cdr res)) notes)))
-                  (T
-                   (setq n-new (1+ n-new)
-                         mine  (cons (list (car res) e (cadr m) (cdr res)) mine)))))))))
-       (if mine
-         (progn
-           (pfl:say "")
-           (pfl:say (strcat "  " (pfg:title g) "   line " lname))
-           (foreach cp (reverse mine)
-             (setq res (pfd:try (strcat (pfr:display-name (cadr cp)) " labels")
-                                'pfs:struct-update
-                                (list (car cp) (cadr cp) g (list (cons 'top top)) fmt)))
-             (pfl:say (strcat "    " (pfr:display-name (cadr cp))
-                              "  STA " (pfl:fmt-sta (caddr cp))
-                              "  rim " (pfr:get (cadr cp) *pf-tag-rim*)
-                              (if (/= "" (cadddr cp)) (strcat "  " (cadddr cp)) "")))
-             (foreach s res (pfl:say s))))))
-
-     ;; on a line no grid shows at that station -- nothing to place it on
-     (foreach e plans
-       (foreach m (pfr:memb-get e)
-         (if (not (member (cons (pfl:handle e) (car m)) done))
-           (setq n-skip (1+ n-skip)
-                 notes (cons (strcat "  " (pfr:display-name e) "  " (car m) "  STA " (pfl:fmt-sta (cadr m))
-                                     "  -- no grid shows this line at this station")
-                             notes)))))
-
-     (if notes (pfl:say ""))
-     (foreach s (reverse notes) (pfl:say s))
-     (pfl:say "")
-     (pfl:say (strcat "  " (itoa n-new) " placed, " (itoa n-have) " already placed (left alone"
-                      " -- PFREFRESH keeps them up to date), " (itoa n-skip) " skipped."))
-     (if (null plans)
-       (pfl:say "  No alpha blocks on any line yet -- run PFASSIGN first."))
+     ;; 2. the alpha blocks on a line, placed grid by grid
+     (pfs:run (vl-remove-if-not 'pfr:memb-get (pfr:all *pf-view-plan*)) grids top (car res))
      (pfl:say "  One UNDO takes this whole run back.")))
   (princ))
 

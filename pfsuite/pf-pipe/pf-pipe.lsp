@@ -96,14 +96,16 @@
        (= (strcase (pfl:effname e)) (strcase *pf-pipe-block*))))
 
 ;; (pfp:all) -> every pipe in model space.  Anonymous *U names included,
-;;   since a dynamic block takes one as soon as a property changes.
+;;   since a dynamic block takes one as soon as a property changes.  A pipe
+;;   RELEASED by PFREMOVE (its grid gone) is not ours any more -- skipped, or
+;;   it would be re-labelled against the nearest OTHER grid.
 (defun pfp:all ( / ss i e out)
   (if (setq ss (ssget "_X" (list '(0 . "INSERT")
                                  (cons 2 (strcat *pf-pipe-block* ",`*U*"))
                                  '(410 . "Model"))))
     (repeat (setq i (sslength ss))
       (setq e (ssname ss (setq i (1- i))))
-      (if (pfp:pipe-p e) (setq out (cons e out)))))
+      (if (and (pfp:pipe-p e) (not (pfr:released-p e))) (setq out (cons e out)))))
   out)
 
 ;; (pfp:xform e) -> (ins-x ins-y sx sy rot)   the insert's own placement
@@ -168,12 +170,13 @@
   (setq h (cdr (assoc 5 (entget e))))
   (vl-remove-if-not '(lambda (l) (= h (pfp:leader-pipe l))) (pfp:all-leaders)))
 
-;; (pfp:all-leaders) -> every pipe-label leader in model space
+;; (pfp:all-leaders) -> every pipe-label leader in model space, released ones
+;;   (PFREMOVE) left out
 (defun pfp:all-leaders ( / ss i e out)
   (if (setq ss (ssget "_X" (list '(0 . "LWPOLYLINE") '(410 . "Model") (list -3 (list *pf-app*)))))
     (repeat (setq i (sslength ss))
       (setq e (ssname ss (setq i (1- i))))
-      (if (pfp:leader-pipe e) (setq out (cons e out)))))
+      (if (and (pfp:leader-pipe e) (not (pfr:released-p e))) (setq out (cons e out)))))
   out)
 
 ;; (pfp:leader-pipe l) -> the handle of the pipe a leader belongs to | nil
@@ -229,8 +232,12 @@
 
 ;; (pfp:sync) -> (inputs . notes)   the four label inputs made the same on
 ;;   every pipe (Jake, 2026-10-16: shared) -- pf-record's shared logic
-(defun pfp:sync ()
-  (pfr:sync-inputs (pfp:all) *pf-pipe-tags-fmt* *pf-pipe-fmt-defaults* nil))
+(defun pfp:sync () (pfp:sync-in (pfp:all)))
+
+;; (pfp:sync-in pipes) -> (inputs . notes)   the same, over these pipes only
+;;   (PFSELFTEST hands its own)
+(defun pfp:sync-in (pipes)
+  (pfr:sync-inputs pipes *pf-pipe-tags-fmt* *pf-pipe-fmt-defaults* nil))
 
 ;; (pfp:rows run slope size mat inputs) -> (row1 . row2)
 ;;   CONST. 45 L.F. ~ 15"   /   ADS N-12 HDPE @ 5.5%
@@ -531,8 +538,34 @@
      (setq n (getint (strcat "\nMaterial number <" (cond (*pfp-mat*) ("none")) ">: ")))
      (if (and n (<= 1 n (length mats))) (setq *pfp-mat* (nth (1- n) mats))))))
 
-;; (pfp:main) -> nil   the command body, run inside pfd:run
-(defun pfp:main ( / p1u p2u p1 p2 g go e res sy)
+;; (pfp:place p1 p2 g size mat others) -> (pipe label-text note ...) |
+;;   explanation string.  The work of PFPIPE, no questions -- what PFSELFTEST
+;;   drives (2026-10-30).  p1 p2: WORLD upstream and downstream inverts, in
+;;   grid g.  size: inches.  mat: text.  others: the pipes whose label inputs
+;;   this one shares -- T = every pipe in the drawing (the command).
+(defun pfp:place (p1 p2 g size mat others / e obj sy)
+  (setq *pfd-stage* "inserting the pipe")
+  (cond
+    ((null (setq e (pfd:insert *pf-pipe-block* p1))) "AutoCAD would not insert the block")
+    (T
+     (setq obj (vlax-ename->vla-object e))
+     (pfr:put e *pf-pipe-size* (pfp:size-text size))
+     (pfr:put e *pf-pipe-mat*  (cond (mat) ("")))
+     (pfr:schema-put e)
+     ;; the run, then visibility; size and label in pfp:update
+     (pfd:dynprop-put obj *pf-pipe-run-x* (- (car p2) (car p1)))
+     (pfd:dynprop-put obj *pf-pipe-run-y* (- (cadr p2) (cadr p1)))
+     (pfd:dynprop-put obj *pf-pipe-vis* *pf-pipe-state-plain*)
+     ;; the shared label inputs: this pipe gets what every pipe holds, and a
+     ;; change typed on any pipe goes to all
+     (setq *pfd-stage* "sharing the label inputs")
+     (setq sy (pfp:sync-in (if (eq others T) (pfp:all) (cons e others))))
+     (foreach s (cdr sy) (pfl:say s))
+     (cons e (pfp:update e g (car sy))))))
+
+;; (pfp:main) -> nil   the command body, run inside pfd:run: the clicks,
+;;   then pfp:place
+(defun pfp:main ( / p1u p2u p1 p2 g go res)
   (cond
     ((= 1 (getvar "BLOCKEDITOR")) (pfl:say "PFPIPE: close the Block Editor first."))
     ((null (tblsearch "BLOCK" *pf-pipe-block*))
@@ -561,25 +594,12 @@
            (T
             ;; first material default: the one PFSETUP recorded on the grid
             (if (null *pfp-mat*) (setq *pfp-mat* (cond ((pfl:g 'material g)) ((car (pfp:mats))))))
-            (setq *pfd-stage* "inserting the pipe")
-            (if (null (setq e (pfd:insert *pf-pipe-block* p1)))
-              (pfl:say "PFPIPE: AutoCAD would not insert the block.")
+            (setq res (pfp:place p1 p2 g *pfp-size* *pfp-mat* T))
+            (if (= (type res) 'STR)
+              (pfl:say (strcat "PFPIPE: " res "."))
               (progn
-                (pfr:put e *pf-pipe-size* (pfp:size-text *pfp-size*))
-                (pfr:put e *pf-pipe-mat*  (cond (*pfp-mat*) ("")))
-                (pfr:schema-put e)
-                ;; the run, then visibility; size and label in pfp:update
-                (pfd:dynprop-put (vlax-ename->vla-object e) *pf-pipe-run-x* (- (car p2) (car p1)))
-                (pfd:dynprop-put (vlax-ename->vla-object e) *pf-pipe-run-y* (- (cadr p2) (cadr p1)))
-                (pfd:dynprop-put (vlax-ename->vla-object e) *pf-pipe-vis* *pf-pipe-state-plain*)
-                ;; the shared label inputs: this pipe gets what every pipe
-                ;; holds, and a change typed on any pipe goes to all
-                (setq *pfd-stage* "sharing the label inputs")
-                (setq sy (pfp:sync))
-                (foreach s (cdr sy) (pfl:say s))
-                (setq res (pfp:update e g (car sy)))
-                (pfl:say (strcat "Placed  " (car res)))
-                (foreach s (cdr res) (pfl:say s))))))))))
+                (pfl:say (strcat "Placed  " (cadr res)))
+                (foreach s (cddr res) (pfl:say s))))))))))
   (princ))
 
 (defun c:PFPIPE ()

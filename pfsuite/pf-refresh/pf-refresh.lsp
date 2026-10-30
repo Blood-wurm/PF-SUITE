@@ -145,14 +145,14 @@
 
 ;;; ---- the run ----------------------------------------------------------------
 
-;; (pfu:main) -> nil   the command body, run inside pfd:run
-(defun pfu:main ( / sc t0 tm times grids top sres fmt pres pin n-chk n-upd n-skip n-gone
-                    notes plans copies pe h plan lname m g r ends a placed keep key stale)
-  (pfc:load)
-  (cond
-    ((null (setq sc (pfu:scope)))
-     (pfl:say "PFREFRESH: nothing picked -- nothing done."))
-    (T
+;; (pfu:run sc fmt pin) -> (checked updated skipped erased)
+;;   The work, no questions -- what PFSELFTEST drives (2026-10-30).
+;;   sc: a scope.  fmt / pin: the structures' and the pipes' shared inputs
+;;   (pfs:sync-fmt, pfp:sync) -- nil = share them drawing-wide here, as the
+;;   command does.  PFSELFTEST hands in its own, so no real block is written.
+(defun pfu:run (sc fmt pin / t0 tm times grids top sres pres n-chk n-upd n-skip n-gone
+                  notes plans copies pe h plan lname m g r ends a placed keep key stale)
+  (progn
      (setq n-chk 0 n-upd 0 n-skip 0 n-gone 0
            t0    (getvar "MILLISECS")
            tm    t0)
@@ -171,9 +171,10 @@
      ;; 1. the shared drafter inputs -- a change typed on any block goes to
      ;;    all, so these are read drawing-wide whatever the scope
      (setq *pfd-stage* "sharing the drafter inputs")
-     (setq sres (pfs:sync-fmt) fmt (car sres)
-           pres (pfp:sync)     pin (car pres))
-     (foreach s (append (cdr sres) (cdr pres)) (pfl:say s))
+     (if (null fmt)
+       (progn (setq sres (pfs:sync-fmt) fmt (car sres)) (foreach s (cdr sres) (pfl:say s))))
+     (if (null pin)
+       (progn (setq pres (pfp:sync) pin (car pres)) (foreach s (cdr pres) (pfl:say s))))
      (setq times (cons (pfu:took "inputs" tm) times) tm (getvar "MILLISECS"))
 
      ;; 2. the plan side is PFASSIGN's (Jake, 2026-10-27).  A plan structure
@@ -292,7 +293,18 @@
                       (itoa (- n-chk n-upd n-skip)) " unchanged and left alone, "
                       (itoa n-skip) " skipped (see above)."))
      (pfl:say (strcat "  Time: " (pfl:join-with ", " (reverse times))
-                      "  --  total " (pfl:fix (/ (max 0 (- (getvar "MILLISECS") t0)) 1000.0) 2) "s"))
+                      "  --  total " (pfl:fix (/ (max 0 (- (getvar "MILLISECS") t0)) 1000.0) 2) "s")))
+  (list n-chk n-upd n-skip n-gone))
+
+;; (pfu:main) -> nil   the command body, run inside pfd:run: the scope
+;;   question, then pfu:run
+(defun pfu:main ( / sc)
+  (pfc:load)
+  (cond
+    ((null (setq sc (pfu:scope)))
+     (pfl:say "PFREFRESH: nothing picked -- nothing done."))
+    (T
+     (pfu:run sc nil nil)
      (pfl:say "  One UNDO takes this whole run back.")))
   (princ))
 

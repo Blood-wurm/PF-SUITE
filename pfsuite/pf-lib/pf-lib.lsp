@@ -19,8 +19,17 @@
 ;;; SECTION 1  --  Messages
 ;;; ==========================================================================
 
+;; While *pfl-quiet* is on, what a command says is kept in *pfl-heard*
+;; (newest first) instead of printed -- PFSELFTEST runs a command's work and
+;; reads what it said (2026-10-30).
+(if (not (boundp '*pfl-quiet*)) (setq *pfl-quiet* nil *pfl-heard* nil))
+
 ;; (pfl:say s) -> nil   one line on the command line
-(defun pfl:say (s) (prompt (strcat "\n" s)) (princ))
+(defun pfl:say (s)
+  (if *pfl-quiet*
+    (setq *pfl-heard* (cons s *pfl-heard*))
+    (prompt (strcat "\n" s)))
+  (princ))
 
 
 ;;; ==========================================================================
@@ -217,6 +226,55 @@
         (if (/= "" (vl-string-trim " \t" l)) (setq out (cons l out))))
       (close f)))
   (reverse out))
+
+;; (pfl:file-sum path) -> a checksum of a text file's contents | nil when it
+;;   can't be read.  pfl:fingerprint over its lines: the same file gives the
+;;   same answer, any edit a different one.  For the .cl and .pro files an
+;;   anchor binds (TINs are binary and large -- not summed).
+(defun pfl:file-sum (path / l)
+  (if (and path (findfile path) (setq l (pfl:readlines path)))
+    (pfl:fingerprint l)))
+
+;; (pfl:pro-parts path) -> (name . role)   V5's pf:parse-pro-name.
+;;   "Storm_CA_INV.pro" -> ("CA" . "INV").  role nil = no known role suffix.
+(defun pfl:pro-parts (path / full n hit suf)
+  (setq full (strcase (cdr (pfl:line-parts (vl-filename-base path))))
+        n    (strlen full))
+  (foreach r *pf-pro-roles*
+    (setq suf (strcat "_" r))
+    (if (and (null hit) (> n (strlen suf)) (= (substr full (- n (strlen suf) -1)) suf))
+      (setq hit (cons (substr full 1 (- n (strlen suf))) r))))
+  (cond (hit) ((cons full nil))))
+
+;; (pfl:tin-design-p path) -> T when the .tin is the proposed surface (DESIGN_*)
+(defun pfl:tin-design-p (path / b p)
+  (setq b (strcase (vl-filename-base path)) p (strcase *pf-tin-design-prefix*))
+  (and (>= (strlen b) (strlen p)) (= (substr b 1 (strlen p)) p)))
+
+;; (pfl:type-keyword ty) -> the word a grid name uses for the utility --
+;;   "FORCE MAIN" for FORCEMAIN, else the type itself
+(defun pfl:type-keyword (ty / c)
+  (if (setq c (assoc (strcase ty) *pf-type-keywords*)) (strcase (cdr c)) (strcase ty)))
+
+;; (pfl:sheet-type s) -> the utility a grid-name text names | nil.  The
+;;   LONGEST keyword found wins (V5's pf:sheet-type).
+(defun pfl:sheet-type (s / u hit n kw)
+  (setq u (strcase s) n 0)
+  (foreach ty *pf-types*
+    (setq kw (pfl:type-keyword ty))
+    (if (and (> (strlen kw) n) (vl-string-search kw u)) (setq hit ty n (strlen kw))))
+  hit)
+
+;; (pfl:sheet-name s ty) -> "DA" from "STORM LINE 'DA'" | nil.  The name is in
+;;   straight quotes (a leading backtick is tolerated, as V5 did).
+(defun pfl:sheet-name (s ty / u p1 p2)
+  (setq u (strcase s))
+  (if (vl-string-search (pfl:type-keyword ty) u)
+    (progn
+      (setq p1 (cond ((vl-string-search "'" u)) ((vl-string-search "`" u))))
+      (if p1 (setq p2 (vl-string-search "'" u (1+ p1))))
+      (if (and p1 p2 (> p2 (1+ p1)))
+        (vl-string-trim " " (substr u (+ p1 2) (- p2 p1 1)))))))
 
 
 ;;; ==========================================================================

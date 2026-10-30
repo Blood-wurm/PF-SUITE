@@ -17,7 +17,8 @@ one wrapper every command runs inside.
   - `*pfd-stage*`: what the command is doing now. Each step sets it as it starts.
   - `pfd:try label fn args`: one structure or pipe that fails is reported and skipped, and the run goes on.
 - **Dynamic properties (write):** `pfd:prop-put`, `pfd:dynprop-put`, `pfd:set-state`
-- **Entities:** `pfd:insert`, `pfd:move`, `pfd:erase`
+- **Entities:** `pfd:insert`, `pfd:insert-on` (scaled, on a layer), `pfd:rescale`, `pfd:move`, `pfd:erase`, `pfd:pline`, `pfd:to-back` (draw order)
+- **Layers:** `pfd:layer`: create-only; an existing layer keeps its colour and plot flag
 - **Station line:**
   - `pfd:fit-end`: fits the station line's top with PFTOP. It measures, sets, measures again, and self-corrects the direction.
   - `pfd:depth-probe`: PFGATE's check that the PFDEPTH grip moves the barrel. It nudges the value and puts it back.
