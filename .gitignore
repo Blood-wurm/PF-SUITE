@@ -1,0 +1,11 @@
+﻿# CAD working files and generated backups
+*.bak
+*.dwl
+*.dwl2
+*.ini
+*.cdc
+*.code-workspace
+*.dwg
+!DIMBLOCK.dwg
+!PFSUITE_BLOCKS.dwg
+pfsuite/pfsuite-md/PF6PROBE.txt
