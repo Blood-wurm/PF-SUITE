@@ -44,6 +44,7 @@ wanted and what it got) or SKIP (with why).
 | 9 PFREFRESH | 0 updated right after PFSTRUCT; a new rim moves only that copy; a typed row kept; a dragged row and PFDEPTH left alone; PFSTAPRE follows on every copy; a new size follows; moved in plan without PFASSIGN named and not moved, then follows after PFASSIGN; assigned but not placed listed; a copied copy erased; an erased plan structure's copy erased | A6, A8, B1–B6, B8, B10, E1–E6, E11, E12 |
 | 10 PFPIPE | The two rows (whole feet, slope to 0.1%), uphill warned, PFLENPRE follows, a stretch updates the length, a new size the diameter; dragged out: arrow on the bottom at the middle, 2.5 long, filled, level landing 1 unit short, left- or right-justified, arrow on the top when above, outside the wall with walls on; 0 updated after; an erased leader redrawn; an erased pipe's leader erased | A7, B11, E7–E9, F2–F10 |
 | 11 PFREMOVE | After Remove Anchor, PFREFRESH leaves the released copy alone and PFASSIGN drops the line from the name | H4–H6 |
+| 12 Palette | The trees' rows (a gridded line, a line with no grid yet), the panels (datum, stations, `.cl`, a stub's `.pro`, "(not set)"), and a button refusing with the reason. Group 7 also checks Assign for one line | — |
 
 **A FAIL** names what it wanted and what it got: paste it. A whole group
 "stopped" is a crash in the suite code; paste that too.
@@ -65,6 +66,22 @@ wanted and what it got) or SKIP (with why).
 | 11 | **PFREFRESH Drawing** and **Line** on the real drawing | Compare the two `Time:` lines |
 | 12 | **PFLINETEST** beside V5's labels | Names match. Headwalls show as `(n)  HDWL_.. (not ours)` and take their number. Read "Near a line but NOT on it", "On no line" and "Stacked" -- go and look at each |
 | 13 | **Look at** the profile after PFSTRUCT and a dragged pipe label | Rows, text height and the arrowhead look right on paper |
+
+### The palette (2026-11-03)
+
+First, in Studio: the settings in `pf-palette\README.md` ("Studio settings"), then save, then **PFPRELOAD** in AutoCAD.
+
+| # | Do this | Expect |
+|---|---|---|
+| P1 | **Fresh AutoCAD session**, load, **PFPALETTE**, and make **Scan** the first click | The scan runs and prints, and finishes. (V5's first click of a session died here.) |
+| P2 | Click a line on Setup, then on Run | The panels fill; a line with no grid reads "no grid yet" |
+| P3 | **Anchor** on a line with no grid yet; **Edit** on one with a grid | The dialog opens; the corner picks work; the palette repaints with the line still picked |
+| P4 | **Remove** on a grid, answer No | "Nothing removed." |
+| P5 | **Zoom To** on a grid and on a line with no grid | Zooms to the grid / to the line in plan |
+| P6 | Run tab: **Assign**, **New Structure**, **Refresh Line** on one line; **Refresh All** | Each says which line it ran on; only that line's structures are named / placed / refreshed |
+| P7 | **New Pipe** | PFPIPE's clicks work from the palette |
+| P8 | Any button with no line picked | "pick a line in the tree first" |
+| P9 | UNDO once after a palette button | That whole run goes back |
 
 ## 3. ATTSYNC check (after any block change)
 

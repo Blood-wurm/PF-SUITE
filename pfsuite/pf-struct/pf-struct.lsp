@@ -396,10 +396,13 @@
                            (if (/= "" (cadddr cp)) (strcat "  " (cadddr cp)) "")))
           (foreach s res (pfl:say s))))))
 
-  ;; on a line no grid shows at that station -- nothing to place it on
+  ;; on a line of this run whose grids don't show that station -- nothing to
+  ;; place it on.  Only the run's lines: a one-line run (the palette) must not
+  ;; report a junction's other line.
   (foreach e plans
     (foreach m (pfr:memb-get e)
-      (if (not (member (cons (pfl:handle e) (car m)) done))
+      (if (and (vl-some '(lambda (g) (= (pfg:line-name g) (car m))) grids)
+               (not (member (cons (pfl:handle e) (car m)) done)))
         (setq n-skip (1+ n-skip)
               notes (cons (strcat "  " (pfr:display-name e) "  " (car m) "  STA " (pfl:fmt-sta (cadr m))
                                   "  -- no grid shows this line at this station")
@@ -421,19 +424,27 @@
 ;;   to date and clears orphans/duplicates.
 ;;   No grid pick: every line in the drawing (the palette will hand it the
 ;;   one line clicked there).
-(defun pfs:main ( / grids top res)
+(defun pfs:main () (pfs:main-for nil))
+
+;; (pfs:main-for lname) -> nil   PFSTRUCT on one line (the palette's button,
+;;   2026-11-03): its grids and the alpha blocks on it.  nil = every line.
+(defun pfs:main-for (lname / grids top res)
   (cond
     ((= 1 (getvar "BLOCKEDITOR")) (pfl:say "PFSTRUCT: close the Block Editor first."))
     (T
      (pfc:load)
      (pfl:say "")
-     (pfl:say "=== PFSTRUCT  place structures in profile ===")
+     (pfl:say (strcat "=== PFSTRUCT  place structures in profile"
+                      (if lname (strcat ", line " lname) "") " ==="))
 
      (setq *pfd-stage* "reading the grids")
      (setq grids (pfg:usable)
            top   (pfg:top-lines))
+     (if lname (setq grids (vl-remove-if-not '(lambda (g) (= (pfg:line-name g) lname)) grids)))
      (if (null grids)
-       (pfl:say "  ** no usable profile grids -- each needs an anchor with a .cl on record"))
+       (pfl:say (if lname
+                  (strcat "  ** " lname " has no usable grid -- anchor it on the Setup tab")
+                  "  ** no usable profile grids -- each needs an anchor with a .cl on record")))
 
      ;; 1. drafter inputs, drawing-wide
      (setq *pfd-stage* "pushing the drafter inputs")
@@ -441,7 +452,9 @@
      (foreach s (cdr res) (pfl:say s))
 
      ;; 2. the alpha blocks on a line, placed grid by grid
-     (pfs:run (vl-remove-if-not 'pfr:memb-get (pfr:all *pf-view-plan*)) grids top (car res))
+     (pfs:run (vl-remove-if-not '(lambda (e / m) (and (setq m (pfr:memb-get e)) (or (null lname) (assoc lname m))))
+                                (pfr:all *pf-view-plan*))
+              grids top (car res))
      (pfl:say "  One UNDO takes this whole run back.")))
   (princ))
 

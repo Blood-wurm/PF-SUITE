@@ -78,12 +78,24 @@
 ;;   ents: nil = every plan structure in the drawing; else only these are
 ;;   numbered and written (PFSELFTEST's, on its own test lines).
 ;;   rims: T = read them off the grids' TINs.
-(defun pfa:run (ents rims grids / lt lines tree res n-new n-upd n-same n-off n-skip)
+(defun pfa:run (ents rims grids) (pfa:run-for ents rims grids nil))
+
+;; (pfa:run-for ents rims grids lname) -> the same counts.  lname: one line
+;;   (the palette's Assign, 2026-11-03) -- the tree is still built as above,
+;;   so a junction's other line still numbers it, but only the structures ON
+;;   that line are written: the ones the tree finds on it, and the ones whose
+;;   record still names it (so one moved off it is caught).  nil = all.
+(defun pfa:run-for (ents rims grids lname / lt lines tree res n-new n-upd n-same n-off n-skip)
   (setq *pfd-stage* "building the line tree")
   (setq lt    (pfm:lines)
         lines (car lt))
   (foreach s (cdr lt) (pfl:say s))
   (setq tree (pfm:tree lines ents))
+  (if lname
+    (setq tree (cons (vl-remove-if-not '(lambda (row) (or (assoc lname (cadr row))
+                                                          (assoc lname (pfr:memb-get (car row)))))
+                                       (car tree))
+                     (cdr tree))))
 
   ;; names first, so everything after is reported under the new name
   (setq *pfd-stage* "writing the names")
@@ -132,6 +144,20 @@
       (pfl:say "=== PFASSIGN  every plan structure, every line ===")
       (pfa:run nil rims grids)
       (pfl:say "  One UNDO takes this whole run back.")))
+  (princ))
+
+;; (pfa:line lname) -> nil   the palette's Assign: one line, no questions.
+;;   Rims from the TIN are their own job (port step 5).
+(defun pfa:line (lname)
+  (pfc:load)
+  (cond
+    ((pfc:metric-p) (pfl:say "PFASSIGN: this is a METRIC drawing.  V6 is english-only and refuses."))
+    ((not (pfc:ready-p)) (pfl:say "PFASSIGN: Carlson isn't loaded."))
+    (T
+     (pfl:say "")
+     (pfl:say (strcat "=== PFASSIGN  line " lname " ==="))
+     (pfa:run-for nil nil nil lname)
+     (pfl:say "  One UNDO takes this whole run back.")))
   (princ))
 
 (defun c:PFASSIGN ()

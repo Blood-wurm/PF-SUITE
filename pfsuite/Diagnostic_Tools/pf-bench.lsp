@@ -2013,6 +2013,9 @@
   ;; pure pieces first -- they need no drawing
   (pfb:st "grid-name text: the utility" (pfl:sheet-type "FORCE MAIN LINE 'A'") "FORCEMAIN" nil)
   (pfb:st "grid-name text: the name" (pfl:sheet-name "STORM LINE 'DA'" "STORM") "DA" nil)
+  (pfb:st "grid-name text: underlined (%%U) reads plain" (pfl:plain-text "%%USTORM LINE 'DA'") "STORM LINE 'DA'" nil)
+  (pfb:st "grid-name text: MTEXT formatting reads plain" (pfl:plain-text "{\\LWATER LINE 'B'}") "WATER LINE 'B'" nil)
+  (pfb:st "grid-name text: %%D (a character) is kept" (pfl:plain-text "45%%D BEND") "45%%D BEND" nil)
   (pfb:st ".pro file name -> (name . role)" (pfl:pro-parts "C:\\x\\Storm_CA_INV.pro") '("CA" . "INV") nil)
   (pfb:st "DESIGN_ surface is the proposed one" (pfl:tin-design-p "C:\\x\\DESIGN_Site.tin") T nil)
   (cond
@@ -2340,7 +2343,7 @@
      (pfd:erase cp))))
 
 ;; --- group 7: PFASSIGN ---------------------------------------------------------
-(defun pfb:st-assign ( / a j b c r face)
+(defun pfb:st-assign ( / a j b c e r face)
   (pfl:say "")
   (pfl:say "  7. PFASSIGN (on the test lines)")
   (cond
@@ -2380,7 +2383,17 @@
      (pfb:st "moved off the line -- the line dropped" (pfr:memb-get c) nil nil)
      (pfb:st "...and said" (pfb:heard-p "*left STORM_YA*on no line now*" (cdr r)) T nil)
      (pfb:st "...the rest number back" (pfr:get a *pf-tag-name*) "YA-1" nil)
-     (pfd:erase c))))
+     (pfd:erase c)
+     ;; Assign ONE line (the palette's button): a new structure before YA-1
+     ;; renumbers YA, but only YB's structure -- the junction -- is written
+     (setq e (pfb:st-plan 250.0 0.0))
+     (pfb:hush 'pfa:run-for (list (list a j b e) nil nil "STORM_YB"))
+     (pfb:st "Assign one line -- its structure renumbered" (pfr:get j *pf-tag-name*) "YA-3/YB-1" nil)
+     (pfb:st "...one only on another line, not written" (pfr:get a *pf-tag-name*) "YA-1" nil)
+     (pfb:st "...nor the new one" (pfr:memb-get e) nil nil)
+     (pfd:erase e)
+     (pfb:hush 'pfa:run (list (list a j b) nil nil))
+     (pfb:st "...Assign everything -- back to YA-2/YB-1" (pfr:get j *pf-tag-name*) "YA-2/YB-1" nil))))
 
 ;; --- group 8: PFSTRUCT ---------------------------------------------------------
 (defun pfb:st-struct ( / plans a j b g top fmt r copies ca cja cjb cb ht base row1 cp cpc)
@@ -2621,6 +2634,41 @@
      (pfb:st "PFASSIGN -- the removed line leaves the structure" (mapcar 'car (pfr:memb-get j)) '("STORM_YA") nil)
      (pfb:st "...and its name drops it" (pfr:get j *pf-tag-name*) "YA-2" nil))))
 
+;; --- group 12: the palette's reads (the buttons are clicked by hand) -----------
+;;   What the trees and panels show, and the refusals.  The OpenDCL controls
+;;   themselves can't be driven from here; their handlers call the work
+;;   functions groups 6-11 already drive.
+(defun pfb:st-palette ( / rows ya yc r)
+  (pfl:say "")
+  (pfl:say "  12. Palette (what the trees and panels show; the clicks are yours)")
+  (cond
+    ((null pfw:lines) (pfl:say "  SKIP  pf-palette isn't loaded"))
+    ((null (pfb:yw 'aya)) (pfl:say "  SKIP  the test grids weren't made (group 6)"))
+    (T
+     (setq rows (pfw:lines)
+           ya   (assoc "STORM_YA" (mapcar '(lambda (x) (cons (nth 2 x) x)) rows))
+           yc   (assoc "STORM_YC" (mapcar '(lambda (x) (cons (nth 2 x) x)) rows))
+           ya   (cdr ya) yc (cdr yc))
+     (pfb:st "the tree lists a gridded line" (and ya (eq (nth 3 ya) (pfb:yw 'aya))) T nil)
+     (pfb:st "...under its utility, by its short name" (list (car ya) (cadr ya)) '("STORM" "YA") nil)
+     (pfb:st "the tree lists a line Scan named, no grid yet" (and yc (null (nth 3 yc)) (nth 4 yc) T) T nil)
+     (pfb:st "panel: the grid's datum" (cdr (assoc "Datum" (pfw:meta-rows ya))) "740.00" nil)
+     (pfb:st "panel: the grid's stations" (cdr (assoc "Stations" (pfw:meta-rows ya))) "1+00.00 to 11+00.00" nil)
+     (pfb:st "panel: its .cl" (cdr (assoc "Centerline (.cl)" (pfw:file-rows ya))) "STORM_YA.cl" nil)
+     (pfb:st "panel: a stub's .pro pair" (cdr (assoc "Invert _INV .pro" (pfw:file-rows yc))) "STORM_YC_INV.pro" nil)
+     (pfb:st "panel: nothing bound reads (not set)" (cdr (assoc "Existing .tin" (pfw:file-rows ya))) "(not set)" nil)
+     ;; the refusals -- a button that does nothing must say why
+     (setq *pfw-sel-run* nil r (pfb:hush 'pfw:need (list 'run 'any)))
+     (pfb:st "a button with no line picked -- refused, and said" (list (car r) (pfb:heard-p "*pick a line*" (cdr r)))
+             '(nil T) nil)
+     (setq *pfw-sel-run* yc r (pfb:hush 'pfw:need (list 'run 'grid)))
+     (pfb:st "New Structure on a line with no grid -- refused, and said"
+             (list (car r) (pfb:heard-p "*no grid yet*" (cdr r))) '(nil T) nil)
+     (setq *pfw-sel-setup* ya r (pfb:hush 'pfw:need (list 'setup 'stub)))
+     (pfb:st "Anchor on a line that has a grid -- refused, use Edit"
+             (list (car r) (pfb:heard-p "*use Edit*" (cdr r))) '(nil T) nil)
+     (setq *pfw-sel-run* nil *pfw-sel-setup* nil))))
+
 ;; (c:PFSELFTEST) -- run every group, clean up, total
 (defun c:PFSELFTEST ( / n-pass n-fail made doc cbi pipe-g t0 yw r)
   (cond
@@ -2651,7 +2699,8 @@
          (pfb:st-run "PFSTRUCT"  'pfb:st-struct)
          (pfb:st-run "PFREFRESH" 'pfb:st-refresh)
          (pfb:st-run "PFPIPE"    'pfb:st-pipes)
-         (pfb:st-run "PFREMOVE"  'pfb:st-remove)))
+         (pfb:st-run "PFREMOVE"  'pfb:st-remove)
+         (pfb:st-run "palette"   'pfb:st-palette)))
      ;; clean up -- the test lines' blocks, stubs and files; everything this
      ;; run made; any leader a test pipe still has (a group that stopped
      ;; part-way may leave one)

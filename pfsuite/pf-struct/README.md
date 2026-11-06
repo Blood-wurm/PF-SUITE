@@ -22,7 +22,9 @@ clearing orphans and duplicates.
 shares the inputs; `pfs:run plans grids top fmt` places and returns
 `(placed already-placed skipped)`. `pfs:sync-fmt-in ents` shares the inputs
 over the blocks given (`pfs:sync-fmt` = every structure). PFSELFTEST group 8
-calls both with its own test blocks.
+calls both with its own test blocks. `pfs:main-for lname` is PFSTRUCT for
+one line, the palette's New Structure button (2026-11-03); "no grid shows
+this station" is reported only for the run's own lines.
 
 ## Label standard (Jake, 2026-10-16)
 

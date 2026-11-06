@@ -13,7 +13,8 @@
 ;;;                       pf-anchor -> pf-index
 ;;;   the only writer     pf-draw   (plus the one command wrapper, pfd:run)
 ;;;   commands            pf-assign, pf-struct, pf-pipe, pf-refresh,
-;;;                       pf-grid (PFSETUP / PFREMOVE: the grid anchors)
+;;;                       pf-grid (PFSETUP / PFREMOVE: the grid anchors), pf-export
+;;;   the palette         pf-palette (PFPALETTE -- calls every command module)
 ;;;   workbench           pf-bench -- NOT part of the suite, deleted whole
 ;;;                       when V6 ships; nothing above may call into it.
 ;;;
@@ -41,6 +42,8 @@
                    ("pf-pipe"    . "pf-pipe")
                    ("pf-refresh" . "pf-refresh")
                    ("pf-grid"    . "pf-grid")
+                   ("pf-export"  . "pf-export")
+                   ("pf-palette" . "pf-palette")
                    ("Diagnostic_Tools" . "pf-bench"))
         (setq p (strcat here "\\" (car f) "\\" (cdr f) ".lsp"))
         (cond
@@ -51,7 +54,7 @@
         (progn
           (prompt "\n  NOT FOUND:")
           (foreach f (reverse missing) (prompt (strcat "\n    " f ".lsp")))))
-      (prompt "\n  Commands:  PFSETUP  PFREMOVE  PFASSIGN  PFSTRUCT  PFPIPE  PFREFRESH")
+      (prompt "\n  Commands:  PFPALETTE  PFSETUP  PFREMOVE  PFASSIGN  PFSTRUCT  PFPIPE  PFREFRESH  PFEXPORT  (PFPRELOAD after a Studio save)")
       (prompt "\n  Workbench: PFMKATT  PFMKPIPEATT  PFSEL  PFGATE  PFSWAP  PFRECTEST  PFSYNCTEST  PFPIPETEST  PFGRIDTEST  PFLINETEST  PFSELFTEST  PFMKANCATT")))
   (princ))
 

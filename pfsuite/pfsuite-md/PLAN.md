@@ -317,7 +317,7 @@ Block Editor *and* written in `pf-cfg`, with no compiler between them.
 **Next** — the V5 port order agreed 2026-10-22 (§11):
 1. The line tree, checked in CAD against V5's names on the same drawing.
 2. PFSETUP, the anchor checks and PFREMOVE. **Written 2026-10-30.**
-3. The palette.
+3. The palette. **Written 2026-11-03** (`pf-palette`, prefix `pfw:`): V5's `.odcl` edited by Jake, tabs Setup / Run / Tools. Buttons run as commands (OpenDCL Event Invoke = 1) instead of V5's SendCommand channel. Assign, New Structure and Refresh Line act on the line picked. Next: line-limited reads and per-line prefixes / suffixes.
 4. Inverts (workflow step 4).
 5. Rims (V5's PFGL → the ONGRADE rule, §3).
 6. Crossings, and PFPRO.

@@ -9,3 +9,5 @@
 !DIMBLOCK.dwg
 !PFSUITE_BLOCKS.dwg
 pfsuite/pfsuite-md/PF6PROBE.txt
+*.pfsuite.json
+*.pfnet

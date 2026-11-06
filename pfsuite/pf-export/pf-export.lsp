@@ -1,11 +1,11 @@
 ;;; ==========================================================================
-;;; pf-export.lsp  --  PFEXPORT: write the drawing's storm network for Pro-Flow.
+;;; pf-export.lsp  --  PFEXPORT: write selected connected lines for Pro-Flow.
 ;;;
-;;; DRAFT, NOT YET RUN IN CAD.  Written against the PFSUITE V6 APIs as of
-;;; 2026-10-16.  Load it AFTER pf-load.lsp (it needs pf-cfg, pf-lib,
+;;; DRAFT: the anchor-scoped command still needs a live CAD check.  Load it
+;;; AFTER pf-load.lsp (it needs pf-cfg, pf-lib,
 ;;; pf-carlson, pf-record, pf-anchor and pf-pipe).  It only READS the drawing.
 ;;;
-;;; Writes <drawing>.pfsuite.json beside the drawing, in the format of
+;;; Writes <drawing>.<selected-line>.pfnet beside the drawing, in the format of
 ;;; Pro-Flow's docs/pfsuite-network-exchange.md, format version 1:
 ;;;   - grids     every usable anchor: the sheet -> station/elevation numbers
 ;;;   - lines     the line each grid shows (.cl name), with its station range
@@ -25,7 +25,7 @@
 
 (setq *pfx-format* "pfsuite-network")
 (setq *pfx-version* 1)
-(setq *pfx-exporter-version* 1)
+(setq *pfx-exporter-version* 2)
 
 
 ;;; ---- JSON text -------------------------------------------------------------
@@ -105,14 +105,58 @@
                          (cons "message" (pfx:str msg))))
           *pfx-diags*)))
 
+;; A shared plan structure's MEMB entries join its lines.  Only those recorded
+;; junctions expand the selection; lines crossing on the sheet do not.
+(defun pfx:member-on-lines (memb lines / hit m)
+  (foreach m memb
+    (if (and (car m) (/= (car m) "")
+             (member (strcase (car m)) lines))
+      (setq hit T)))
+  hit)
+
+(defun pfx:connected-lines (seed / memberships lines changed memb m name)
+  (setq memberships (mapcar 'pfr:memb-get (pfr:all *pf-view-plan*))
+        lines       (list seed)
+        changed     T)
+  (while changed
+    (setq changed nil)
+    (foreach memb memberships
+      (if (pfx:member-on-lines memb lines)
+        (foreach m memb
+          (if (and (car m) (/= (car m) "")
+                   (not (member (setq name (strcase (car m))) lines)))
+            (setq lines (cons name lines)
+                  changed T))))))
+  (vl-sort lines '<))
+
+(defun pfx:pick-line ( / pick e g)
+  (if (setq pick (entsel "\nPFEXPORT - select a profile anchor: "))
+    (progn
+      (setq e (car pick))
+      (cond
+        ((/= (cdr (assoc 0 (entget e))) "INSERT")
+         (pfl:say "PFEXPORT: select a PFSUITE profile anchor."))
+        ((not (wcmatch (strcase (pfl:effname e)) (strcase *pf-anchor-blocks*)))
+         (pfl:say "PFEXPORT: select a PFSUITE profile anchor."))
+        ((pfg:copy-p e)
+         (pfl:say "PFEXPORT: this anchor is a copy; select the original."))
+        ((null (setq g (pfg:grid e)))
+         (pfl:say "PFEXPORT: this anchor has no usable grid settings."))
+        ((null (pfg:line-name g))
+         (pfl:say "PFEXPORT: this anchor has no .cl line name."))
+        (T (pfg:line-name g))))))
+
 ;; Every usable grid (pfg:usable already drops copies and unreadable anchors).
-(defun pfx:grids ( / out g)
+(defun pfx:grids (lines / out g a)
   (foreach a (pfg:all)
-    (if (pfg:copy-p a)
+    (if (and (pfg:copy-p a)
+             (setq g (pfg:grid a))
+             (member (pfg:line-name g) lines))
       (pfx:diag "warning" "anchor_copy" (pfl:handle a)
                 "copied anchor (shares its stamp with another); not exported")))
   (foreach g (pfg:usable)
-    (setq out
+    (if (member (pfg:line-name g) lines)
+      (setq out
       (cons (pfx:obj
               (list (cons "id"     (pfx:str (pfl:handle (pfl:g 'anchor g))))
                     (cons "line"   (pfx:str (pfg:line-name g)))
@@ -122,14 +166,14 @@
                     (cons "leftx"  (pfx:num (pfl:g 'leftx g)))
                     (cons "basey"  (pfx:num (pfl:g 'basey g)))
                     (cons "vscale" (pfx:num (pfl:g 'vscale g)))))
-            out)))
+            out))))
   (reverse out))
 
 ;; One entry per line name across the usable grids.
-(defun pfx:lines ( / seen out lname cl rng)
+(defun pfx:lines (lines / seen out lname cl rng)
   (foreach g (pfg:usable)
     (setq lname (pfg:line-name g))
-    (if (not (member lname seen))
+    (if (and (member lname lines) (not (member lname seen)))
       (progn
         (setq seen (cons lname seen)
               cl   (pfg:cl g)
@@ -144,6 +188,18 @@
                         (cons "station_range"
                               (if rng (pfx:arr (mapcar 'pfx:num rng)) "null"))))
                 out)))))
+  ;; Preserve a referenced line even when its grid is unusable.  Otherwise a
+  ;; shared structure's MEMB would point outside lines[] and block import.
+  (foreach lname lines
+    (if (not (member lname seen))
+      (progn
+        (pfx:diag "warning" "line_no_grid" lname
+                  "connected line has no usable profile grid")
+        (setq out (cons (pfx:obj
+                          (list (cons "id" (pfx:str lname))
+                                (cons "cl_file" "null")
+                                (cons "station_range" "null")))
+                        out)))))
   (reverse out))
 
 ;; The rim and where it came from.  An empty PFRIM is NONE, never zero.
@@ -160,16 +216,14 @@
        (setq src *pf-src-asserted*))
      (pfx:obj (list (cons "value" (pfx:num v)) (cons "source" (pfx:str src)))))))
 
-(defun pfx:structures ( / out rec e pt rot memb)
+(defun pfx:structures (lines / out rec e pt rot memb)
   (foreach e (pfr:all *pf-view-plan*)
     (setq rec  (pfr:read e)
           pt   (cdr (assoc 'pt rec))
           rot  (cond ((cdr (assoc 50 (entget e)))) (0.0))
           memb (cdr (assoc 'memb rec)))
-    (if (null memb)
-      (pfx:diag "info" "no_membership" (pfl:handle e)
-                (strcat (pfr:display-name e) " is on no line yet (PFASSIGN / PFSTRUCT)")))
-    (setq out
+    (if (pfx:member-on-lines memb lines)
+      (setq out
       (cons
         (pfx:obj
           (list (cons "id"       (pfx:str (pfl:handle e)))
@@ -192,23 +246,24 @@
                                                   (cons "offset" (pfx:num (caddr m))))))
                                 memb)))
                 (cons "record_schema" (pfx:num (cdr (assoc 'schema rec))))))
-        out)))
+        out))))
   (reverse out))
 
-(defun pfx:pipes ( / out ends anchor size wall)
+(defun pfx:pipes (lines / out ends anchor grid lname size wall)
   (foreach e (pfp:all)
-    (setq ends (pfp:ends e))
-    (cond
-      ((null ends)
-       (pfx:diag "warning" "pipe_unreadable" (pfl:handle e)
-                 "cannot read the pipe's run grip; not exported"))
-      (T
-       (setq anchor (pfg:anchor-of (pfp:mid ends))
+    (setq ends   (pfp:ends e)
+          anchor (pfg:anchor-of (if ends (pfp:mid ends) (pfl:ins e)))
+          grid   (if anchor (pfg:grid anchor))
+          lname  (if grid (pfg:line-name grid)))
+    (if (member lname lines)
+      (cond
+        ((null ends)
+         (pfx:diag "warning" "pipe_unreadable" (pfl:handle e)
+                   "cannot read the pipe's run grip; not exported"))
+        (T
+       (setq
              size   (pfp:size e)
              wall   (if size (pfp:wall size)))
-       (if (null anchor)
-         (pfx:diag "warning" "pipe_off_grid" (pfl:handle e)
-                   "not on a usable grid; Pro-Flow will report it unresolved"))
        (if (null size)
          (pfx:diag "error" "pipe_no_size" (pfl:handle e) "PFSIZE is blank"))
        (setq out
@@ -227,7 +282,7 @@
                    (cons "size_in"  (pfx:num size))
                    (cons "material" (pfx:str (pfp:mat e)))
                    (cons "wall_in"  (pfx:num wall))))
-           out)))))
+           out))))))
   (reverse out))
 
 ;; Carlson's pipen.dta: "n, Material, typecode" per line.
@@ -252,24 +307,33 @@
 
 ;;; ---- the command -------------------------------------------------------------
 
-(defun pfx:main ( / path f grids lines structs pipes mats doc)
+(defun pfx:main ( / seed connected path f grids lines structs pipes mats doc)
   (setq *pfx-diags* nil)
   (cond
     ((and *pf-metric-refuse* (pfc:metric-p))
      (pfl:say "PFEXPORT: metric drawing -- refused (the exchange is in feet)."))
+    ((null (setq seed (pfx:pick-line)))
+     (pfl:say "PFEXPORT: no line selected; nothing written."))
     (T
-     (setq grids   (pfx:grids)
-           lines   (pfx:lines)
-           structs (pfx:structures)
-           pipes   (pfx:pipes)
+     (setq connected (pfx:connected-lines seed)
+           grids   (pfx:grids connected)
+           lines   (pfx:lines connected)
+           structs (pfx:structures connected)
+           pipes   (pfx:pipes connected)
            mats    (pfx:materials)
            path    (strcat (getvar "DWGPREFIX")
-                           (vl-filename-base (getvar "DWGNAME")) ".pfsuite.json"))
+                           (vl-filename-base (getvar "DWGNAME"))
+                           "." seed ".pfnet"))
+     (if (null pipes)
+       (pfl:say "PFEXPORT: no PFSUITE pipes on these lines; nothing written.")
+       (progn
      (setq doc
        (strcat
          "{\n"
          "  \"format\": " (pfx:str *pfx-format*) ",\n"
          "  \"format_version\": " (itoa *pfx-version*) ",\n"
+         "  \"snapshot\": "
+         (pfx:str "partial") ",\n"
          "  \"producer\": "
          (pfx:obj (list (cons "name" (pfx:str "PFSUITE"))
                         (cons "version" (pfx:str "V6"))
@@ -296,13 +360,14 @@
        (progn
          (write-line doc f)
          (close f)
-         (pfl:say (strcat "PFEXPORT: " (itoa (length structs)) " structure(s), "
+         (pfl:say (strcat "PFEXPORT: " (itoa (length connected)) " connected line(s), "
+                          (itoa (length structs)) " structure(s), "
                           (itoa (length pipes)) " pipe(s), "
                           (itoa (length grids)) " grid(s) -> " path))
          (if *pfx-diags*
            (pfl:say (strcat "  " (itoa (length *pfx-diags*))
                             " diagnostic(s) written into the file."))))
-       (pfl:say (strcat "PFEXPORT: cannot write " path)))))
+       (pfl:say (strcat "PFEXPORT: cannot write " path)))))))
   (princ))
 
 (defun c:PFEXPORT () (pfx:main))

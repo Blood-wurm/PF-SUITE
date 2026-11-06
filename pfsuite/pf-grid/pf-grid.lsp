@@ -256,6 +256,7 @@
   (if (setq ss (ssget "_X" (list '(0 . "TEXT,MTEXT") (cons 8 *pf-name-layer*) '(410 . "Model"))))
     (repeat (setq i (sslength ss))
       (setq s  (cdr (assoc 1 (entget (ssname ss (setq i (1- i))))))
+            s  (if s (pfl:plain-text s))           ; "%%USTORM LINE 'DA'" reads plain
             ty (if s (pfl:sheet-type s))
             nm (if ty (pfl:sheet-name s ty)))
       (cond
@@ -636,12 +637,19 @@
   (pfd:erase anchor)
   n)
 
-;; (pfn:remove-main) -> nil   the command body
-(defun pfn:remove-main ( / pt hit a g objs mode ans n)
+;; (pfn:remove-main) -> nil   the command body: the click, then pfn:remove-ask
+(defun pfn:remove-main ( / pt hit)
   (cond
     ((null (setq pt (getpoint "\nClick the grid to remove (anywhere inside it): "))))
     ((null (setq hit (pfg:nearest (trans pt 1 0)))) (pfl:say "PFREMOVE: no grids in this drawing."))
-    ((pfg:copy-p (setq a (car hit)))
+    (T (pfn:remove-ask (car hit))))
+  (princ))
+
+;; (pfn:remove-ask a) -> nil   PFREMOVE on a known anchor: what's on it, then
+;;   [Anchor/Everything] and the confirm.  The palette's Remove comes in here.
+(defun pfn:remove-ask (a / g objs mode ans n)
+  (cond
+    ((pfg:copy-p a)
      (initget "Yes No")
      (if (= "Yes" (getkword "\nThat anchor is a COPY of another one.  Erase just the copy?  [Yes/No] <No>: "))
        (progn (pfd:erase a) (pfl:say "Copied anchor erased."))
@@ -700,12 +708,38 @@
   (setq n (getint "\nNumber <Enter = cancel>: "))
   (cond ((null n) nil) ((= n 0) 'NEW) ((<= n (length stubs)) (nth (1- n) stubs))))
 
-;; (pfn:main) -> nil   the command body
-(defun pfn:main ( / k s top gl pt hit)
+;; (pfn:refusal) -> why PFSETUP can't run here | nil.  Loads Carlson first.
+;;   Shared by the command and the palette's Setup buttons.
+(defun pfn:refusal ()
   (pfc:load)
   (cond
-    ((pfc:metric-p) (pfl:say "PFSETUP: this is a METRIC drawing.  V6 is english-only and refuses."))
-    ((not (pfc:ready-p)) (pfl:say "PFSETUP: Carlson isn't loaded."))
+    ((pfc:metric-p) "PFSETUP: this is a METRIC drawing.  V6 is english-only and refuses.")
+    ((not (pfc:ready-p)) "PFSETUP: Carlson isn't loaded.")))
+
+;; (pfn:scan-run) -> nil   Scan, then every anchor's checks, printed.  The
+;;   command's default, and the palette's Scan button.
+(defun pfn:scan-run ( / s k top gl)
+  (pfl:say "")
+  (pfl:say "=== PFSETUP  scan ===")
+  (setq *pfd-stage* "scanning the grid names")
+  (foreach s (pfn:scan) (pfl:say s))
+  (setq *pfd-stage* "checking the anchors" top (pfg:top-lines) gl (pfn:grid-lines))
+  (pfl:say "")
+  (pfl:say "  Anchor checks:")
+  (foreach a (pfg:all)
+    (if (setq s (pfn:checks a top gl))
+      (progn
+        (setq k T)
+        (pfl:say (strcat "    " (if (pfg:grid a) (pfg:title (pfg:grid a)) (pfl:handle a))))
+        (foreach f s (pfl:say (strcat "      ** " f))))))
+  (if (not k) (pfl:say "    all fine"))
+  (pfl:say "  One UNDO takes this whole run back.")
+  (princ))
+
+;; (pfn:main) -> nil   the command body
+(defun pfn:main ( / why k s pt hit)
+  (cond
+    ((setq why (pfn:refusal)) (pfl:say why))
     (T
      (initget "Scan Anchor Edit")
      (setq k (cond ((getkword "\nPFSETUP [Scan/Anchor/Edit] <Scan>: ")) ("Scan")))
@@ -722,23 +756,7 @@
           ((null (setq hit (pfg:nearest (trans pt 1 0)))) (pfl:say "PFSETUP: no grids in this drawing."))
           ((pfg:copy-p (car hit)) (pfl:say "That anchor is a COPY of another one -- PFREMOVE it."))
           (T (pfn:edit (car hit)))))
-       (T
-        (pfl:say "")
-        (pfl:say "=== PFSETUP  scan ===")
-        (setq *pfd-stage* "scanning the grid names")
-        (foreach s (pfn:scan) (pfl:say s))
-        (setq *pfd-stage* "checking the anchors" top (pfg:top-lines) gl (pfn:grid-lines))
-        (pfl:say "")
-        (pfl:say "  Anchor checks:")
-        (setq k nil)
-        (foreach a (pfg:all)
-          (if (setq s (pfn:checks a top gl))
-            (progn
-              (setq k T)
-              (pfl:say (strcat "    " (if (pfg:grid a) (pfg:title (pfg:grid a)) (pfl:handle a))))
-              (foreach f s (pfl:say (strcat "      ** " f))))))
-        (if (not k) (pfl:say "    all fine"))
-        (pfl:say "  One UNDO takes this whole run back.")))))
+       (T (pfn:scan-run)))))
   (princ))
 
 (defun c:PFSETUP ()

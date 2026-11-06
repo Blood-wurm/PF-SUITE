@@ -22,7 +22,9 @@ PFREFRESH.
 `pfa:run ents rims grids` does the work and returns
 `(assigned updated unchanged off skipped)`. `ents` nil = every plan structure;
 a list = number and write only those (PFSELFTEST group 7, on its own test
-lines).
+lines). `pfa:run-for ents rims grids lname` writes only the structures on
+line `lname` (the tree still numbers every line, so a junction's other line
+counts); `pfa:line lname` is the palette's Assign button (2026-11-03).
 
 ## Rules
 

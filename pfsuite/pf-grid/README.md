@@ -12,7 +12,7 @@ Ported from V5's `pfsetup.lsp` and `pfanchor.lsp`, mostly as-is (Jake, 2026-10-3
 
 **PFSETUP** asks `[Scan/Anchor/Edit] <Scan>`. The palette will call the same pieces later.
 - **Scan** (V5's AUTO):
-  - reads the grid-name text on layer `PF-NAME` (`STORM LINE 'DA'`);
+  - reads the grid-name text on layer `PF-NAME` (`STORM LINE 'DA'`), formatting codes stripped first (`%%U` underline and the like, `pfl:plain-text`);
   - finds `TYPE_NAME.cl` in the Alignments folder and the `_INV` / `_TOP` `.pro` pair in the Profiles folder;
   - writes a **stub** for each line: a line known before its grid is anchored, in V5's drawing-dictionary format, which the line tree reads.
   - It then checks every anchor and prints what it finds.
@@ -61,6 +61,8 @@ The dialog and the picks ask; these do the work, given the answers -- what PFSEL
 - `pfn:edit-check anchor rec`: Edit's refusals (a string), `'UNKNOWN` (go ahead, ranges not compared) or nil (go);
 - `pfn:edit-write anchor rec pts`: Edit's write; `pfn:corners` gives the corners on record;
 - `pfn:remove anchor mode objs`: PFREMOVE's work (`pfn:on-grid` lists `objs`).
+
+For the palette (2026-11-03): `pfn:refusal` (metric / no Carlson, shared with the command), `pfn:scan-run` (Scan plus every anchor's checks, printed), `pfn:remove-ask anchor` (PFREMOVE after the click: the listing, `[Anchor/Everything]`, the confirm).
 
 ## Tests
 

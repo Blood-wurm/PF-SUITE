@@ -256,6 +256,15 @@
 (defun pfl:type-keyword (ty / c)
   (if (setq c (assoc (strcase ty) *pf-type-keywords*)) (strcase (cdr c)) (strcase ty)))
 
+;; (pfl:plain-text s) -> s without AutoCAD's text formatting codes: TEXT's
+;;   %%U / %%O (underline, overline) and MTEXT's \L \O and braces.  A grid
+;;   name drawn underlined reads "%%USANITARY LINE A" (PFSETUP Scan,
+;;   2026-11-03).  %%D, %%P, %%C stand for characters and are left alone.
+(defun pfl:plain-text (s)
+  (foreach code '("%%U" "%%u" "%%O" "%%o" "\\L" "\\l" "\\O" "\\o" "{" "}")
+    (setq s (pfl:subst-all "" code s)))
+  s)
+
 ;; (pfl:sheet-type s) -> the utility a grid-name text names | nil.  The
 ;;   LONGEST keyword found wins (V5's pf:sheet-type).
 (defun pfl:sheet-type (s / u hit n kw)

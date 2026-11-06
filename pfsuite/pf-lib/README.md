@@ -22,6 +22,7 @@ Everything more than one lisp needs, so it is called, never copied (Jake,
 - **Profile grid:** `pfl:grid`, `pfl:g`, `pfl:sta->x`, `pfl:elev->y`, `pfl:x->sta`, `pfl:y->elev`
 - **Numbers and strings:** `pfl:fix`, `pfl:fmt-sta`, `pfl:parse-sta`, `pfl:number-p`, `pfl:join`, `pfl:join-with`, `pfl:line-parts` ("STORM_AA" → ("STORM" . "AA"), shared by PFSTRUCT and the line tree), `pfl:subst-all`, `pfl:nospace`, `pfl:pad`, `pfl:split`
 - **Files:** `pfl:readlines`, `pfl:file-sum` (a text file's checksum)
+- **Text:** `pfl:plain-text` strips `%%U` / `%%O` and MTEXT's `\L` `\O` and braces (an underlined grid name, 2026-11-03); `%%D` `%%P` `%%C` are characters and stay
 - **File and grid names (V5's conventions):** `pfl:pro-parts` ("Storm_CA_INV.pro" → ("CA" . "INV")), `pfl:tin-design-p`, `pfl:type-keyword`, `pfl:sheet-type`, `pfl:sheet-name` ("STORM LINE 'DA'" → "DA")
 - **Entities:** `pfl:ins`, `pfl:handle`, `pfl:effname` (the real block name, never `*U47`; **every block-name comparison goes through it**), `pfl:bbox`, `pfl:text-len`
 - **Dynamic properties (read):** `pfl:dynprops`, `pfl:dynprop`, `pfl:prop-get`, `pfl:dynprop-get`, `pfl:allowed`, `pfl:visprop`
