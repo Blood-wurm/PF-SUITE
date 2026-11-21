@@ -1,6 +1,6 @@
 # V6 — plan
 
-*Rewritten 2026-10-16 to match decisions to date. V5 port inventory added 2026-10-22 (§11).*
+*Rewritten 2026-10-16 to match decisions to date. V5 port inventory added 2026-10-22 (§11). Faces per line, inverts, the pipe table, the plan label and crossings added 2026-11-20 (§12).*
 
 V6 is a hard fork of V5. **Nothing in V5 is edited.**
 - V5 keeps working, and stays the thing that runs on a live job until V6 replaces a command outright.
@@ -35,9 +35,9 @@ plan. It is palette-driven like V5, so each step is a button.
    - Grid standards are still to discuss.
 2. **Place the structures** (`PFSTRUCT`, "place structures in profile"). It places every structure **not placed yet**. Today that's every line in the drawing; once the palette exists, it's the line clicked there. The station line runs up to the labels at the grid top, and the label information is filled in. **Placed copies are PFREFRESH's from then on,** and the same goes for PFPIPE.
 3. **Place the pipes** by hand (`PFPIPE` helps).
-4. **Label the inverts and pipes.** The tool reads the pipe block. Not written yet.
+4. **Label the inverts and pipes.** The tool reads the pipe block. PFREFRESH writes the invert rows (pf-invert, 2026-11-20).
 5. Repeat for every utility.
-6. **Label the crossings,** roughly as V5 does. Undecided, likely by pulling the invert labels from the block.
+6. **Label the crossings:** PFXLABEL on one line, the clearance checked (pf-xing, 2026-11-20).
 7. **Refresh** (`PFREFRESH`): relabels **only what changed**, not the whole drawing.
    - **How it tells:** each block carries a fingerprint of what it was built from.
    - **Hand edits are left alone:** typed text, moved labels, PFDEPTH, typed rim/name/face, pipe ends. A label reset by ATTSYNC is put back.
@@ -87,10 +87,12 @@ through. `B` back, `F` front, `S` side.
 - Within 45° of front is `F`, within 45° of back is `B`, otherwise `S`.
 - Within 5° of a 45° corner is reported, not silently resolved.
 
-Today `PFFACE` is **one attribute on the alpha block**. Two cases are still
-open (§9):
-- a junction, whose copies on different lines may need different faces;
-- a structure at the very end of a line, which gets no face. For now, type one by hand.
+**A face per line** (Jake, 2026-11-20). Each line's face is kept on its MEMB
+entry; each profile copy shows its own line's. The alpha block's `PFFACE` is
+the through-line's face; typed by hand, it wins on every copy.
+- **The flow always leaves through the back.** The first letter (the lower-station, downstream side) is `B`; only the upstream side is read. A downstream side that reads otherwise is reported (turned wrong in plan) and that line's face isn't written.
+- **A line's outlet end** gets a face (back taken). **The top of a line** — nothing upstream — is taken as straight through: `BF`.
+- A view changed by hand on a profile copy is not checked (fine for now, Jake): it stays until something else on that copy changes.
 
 ### 2.3 Attributes — 25 tags
 
@@ -99,7 +101,7 @@ Every structure definition carries the same set.
 - **The record** (hidden): `PFNAME` `PFTYPE` `PFSIZE` `PFPOS` `PFRIM` `PFSTRUCT` `PFINLET` `PFVIEW` `PFFACE`
 - **The label stack** (visible, at the grid top): `PFSTA1` `PFSTA2` `PFSTA3` `PFCON` `PFTEXT2` `PFELEV`
 - **The invert fan** (visible): `PFINV1` … `PFINV5`. Written by the invert step later, not by PFSTRUCT.
-- **Drafter inputs** (hidden): `PFSTAPRE` `PFSTASUF` `PFCONPRE` `PFCONSUF` `PFELEVSUF`. Typed on any block and pushed to every structure. `PFCONSUF` is no longer used.
+- **Drafter inputs** (hidden): `PFSTAPRE` `PFSTASUF` `PFCONPRE` `PFCONSUF` `PFELEVPRE` `PFELEVSUF`. Filled from saved defaults -- line, then utility, then drawing, then the type's built-in (pf-defaults; the palette's Defaults button). A value typed on one block stays on that block (decided 2026-11-17; replaces the push to every structure).
 
 **Label standard** (Jake, 2026-10-16):
 
@@ -157,7 +159,7 @@ PFLABEL2  ADS N-12 HDPE @ 5.5%        material PFSLOPEPRE slope PFSLOPESUF
 
 - **Rounding:** whole feet, slope to 0.1%.
 - **Placement:** the rows run along the pipe, straddling its centre 2.0 text heights apart, as V5 did.
-- **Shared inputs:** the four are **shared across every pipe**, with the same logic as the structure inputs (`pfr:sync-inputs`).
+- **Defaults:** the four pipe label inputs inherit drawing, utility, and line defaults. A typed pipe attribute stays with that pipe.
 
 **The leader** (Jake, 2026-10-22) is **drawn by the tool**, not held in the
 block. A leader built into the block was tried first and dropped: its rotate,
@@ -318,10 +320,13 @@ Block Editor *and* written in `pf-cfg`, with no compiler between them.
 1. The line tree, checked in CAD against V5's names on the same drawing.
 2. PFSETUP, the anchor checks and PFREMOVE. **Written 2026-10-30.**
 3. The palette. **Written 2026-11-03** (`pf-palette`, prefix `pfw:`): V5's `.odcl` edited by Jake, tabs Setup / Run / Tools. Buttons run as commands (OpenDCL Event Invoke = 1) instead of V5's SendCommand channel. Assign, New Structure and Refresh Line act on the line picked. Next: line-limited reads and per-line prefixes / suffixes.
-4. Inverts (workflow step 4).
+4. Inverts (workflow step 4). **Written 2026-11-20** (pf-invert, §12).
 5. Rims (V5's PFGL → the ONGRADE rule, §3).
-6. Crossings, and PFPRO.
+6. Crossings. **Written 2026-11-20** (pf-xing, §12) — from the pipe blocks, so PFPRO isn't needed for them.
 7. Exports, if any.
+
+**Written 2026-11-20, not yet seen in CAD:** faces per line, invert rows, the
+pipe table, the plan label, PFXLABEL (§12). PFSELFTEST groups 15–19.
 
 `pf-grid` (drawing the grid) waits on the grid standards discussion. The
 remaining structure types come in alongside.
@@ -332,8 +337,8 @@ remaining structure types come in alongside.
 
 - **Layers** for profile copies and labels. V5 used PF-ANNO (green, no-plot).
 - **Text style** is set in the block by Jake. The code doesn't set one.
-- **Pipe wall hatching** that follows the stretches. Not worked out.
-- **Prefix and suffix scope.** Today a change on any block goes to every structure, with no per-profile override. Revisit later.
+- ~~**Pipe wall hatching** that follows the stretches.~~ Solved 2026-10-22: make the hatch Associative = Yes.
+- ~~**Prefix and suffix scope.**~~ Decided 2026-11-17: saved defaults per line / utility / drawing, and a value typed on one block stays on it (pf-defaults).
 
 ---
 
@@ -343,10 +348,11 @@ remaining structure types come in alongside.
 2. **Superelevated curves:** cross-slope is not one number there.
 3. **Grate depression:** which types, and one number or per type.
 4. **The inlet family** for `PFINLET`: does `PFTYPE` alone settle it?
-5. **Faces at a junction and at a line's end.** Today there is one PFFACE per structure, and none at a line's end.
-6. **Junction depth:** each profile copy has its own PFDEPTH grip, so one structure could show different depths on different sheets.
-7. **Crossing blocks:** one parametric block or per size, and whether the label can live inside it.
-8. **Material wall thicknesses** for outside-to-outside clearance. `pipesize.dta` holds one per size.
+5. ~~**Faces at a junction and at a line's end.**~~ Decided 2026-11-20: a face per line, the outlet always the back (§2.2).
+6. ~~**Junction depth.**~~ Decided 2026-11-20: each grid's copy has its own bottom, and that line's inverts come from it — different depths on different sheets are intended.
+7. ~~**Crossing blocks.**~~ Decided 2026-11-20: one `PFSUITE_XING`, label inside it (§12).
+8. ~~**Material wall thicknesses.**~~ Decided 2026-11-20: the pipe table with ID and OD per material and size (§12). Most walls still to fill in.
+11. **Inverts on the plan block** (for Edit Attributes and PFEXPORT): needs hidden plan attributes, and the Pro-Flow importer to agree to a new field.
 9. **Are three station rows enough?** That's a junction on three lines.
 10. **PFSIZE shows blank** on some CBIs. Cosmetic now, since PFSTRUCT reads the lookup, but the field needs checking.
 
@@ -408,3 +414,19 @@ blocks now carry size, material, rim and inverts, so each is simpler than in V5.
 | PF-ANNO layer logic, erasing by stored handle | Blocks; layers later |
 | PFINDEX and its caches | MEMB on the structure, kept current by PFREFRESH |
 | The zoom parade | Dropped in V5 too |
+
+---
+
+## 12. Built 2026-11-20 (Jake's go: "run through all the steps")
+
+Details in each module's README. PFSELFTEST groups 15–19.
+
+1. **A face per line** (pf-index, pf-struct): §2.2.
+2. **Invert rows** (pf-invert, run by PFREFRESH): a pipe attached → its end's elevation, with its size; no pipe on a side → the structure's bottom on that side (SMH: the floor at that wall). A pipe belongs to the structure whose wall its end sits at; left wall = outlet. An end below the bottom is reported. V5's layout. Not on the plan block yet (§9 Q11).
+3. **The pipe table** (pf-mats, `pf-cfg\pf-pipes.csv`): materials and sizes with ID and OD, kept with the lisp, edited by hand, one Default per utility. Carlson's files are no longer read. The pipe block carries hidden `PFID` / `PFOD`, filled from it; a typed value is kept. Seeded from Carlson; walls blank except RCP (ASTM C76 Wall B, to check).
+4. **The plan label** (pf-index, PFASSIGN): `PFPLABEL` shows the name on the plan block (a visible attribute; blank on profile copies, so no visibility state needed); height from the `PFPLANHT` setting (2.4); a dragged label is put back after ATTSYNC. `PFMKPLABEL` (bench) adds it in BEDIT, once per block definition, with its rotate grip: a Rotation parameter `PFPLROT` on the block's base point and a Rotate action on the label, so the drafter swings it around the structure (scripted through BPARAMETER / BACTION; anything AutoCAD still asks is handed to the drafter). PFGATE checks the grip turns the label about the base point.
+5. **Crossings — PFXLABEL** (pf-xing): on one line; pipe blocks only; one `PFSUITE_XING` block per crossing at the crossing pipe's invert; outside-to-outside clearance; short or unknown → red + a palette warning; within `PFCLRWARN` of `PFCLRMIN` → a dimension and the wall note. PFREFRESH keeps them up to date.
+
+**Settings** (Defaults dialog, by line / utility / drawing): `PFPLANHT` 2.4, `PFCLRMIN` 18", `PFCLRWARN` 6".
+
+**For Jake to do in the Block Editor / Studio:** `PFID` + `PFOD` on `PFSUITE_PIPE` (PFMKPIPEATT); `PFPLABEL` on every structure definition (PFMKPLABEL in BEDIT); the `PFSUITE_XING` block (pf-xing README); `btnXing` on the palette's Run tab (pf-palette README).

@@ -36,3 +36,8 @@ counts); `pfa:line lname` is the palette's Assign button (2026-11-03).
 - **Face:** one per structure, from the one line that runs on both sides of it. A structure at the very end of its only line, or with two lines running through it, is named in the run -- set PFFACE by hand.
 - **Headwalls** (`*pf-count-only*`) take their number but are never assigned.
 - One UNDO takes the whole run back.
+
+## Added 2026-11-20
+
+- **Faces per line** (pf-index): each line's face on its MEMB entry, reported per line.
+- **The plan label:** every plan structure in the run gets PFPLABEL = its name, at the PFPLANHT setting's height (2.4 built in); a label dragged then reset by ATTSYNC is put back. Blocks without PFPLABEL yet are counted and named once.

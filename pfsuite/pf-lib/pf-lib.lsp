@@ -203,6 +203,28 @@
           b (rem (+ b a) 65521)))
   (strcat (itoa a) "-" (itoa b) "-" (itoa (strlen s))))
 
+;; (pfl:csv-split s) -> one CSV line's fields, as Excel writes them: a field
+;;   in double quotes may hold commas, and "" inside it is one quote.  Each
+;;   field trimmed of spaces and tabs.  A UTF-8 byte-order mark at the start
+;;   of the line (Excel's "CSV UTF-8") is dropped.
+(defun pfl:csv-split (s / cs out cur inq c nx)
+  (setq cs (vl-string->list s) cur nil out nil inq nil)
+  ;; the BOM: EF BB BF read as three characters, or as one when the file
+  ;; was opened as UTF-8
+  (cond
+    ((and (>= (length cs) 3) (= (car cs) 239) (= (cadr cs) 187) (= (caddr cs) 191))
+     (setq cs (cdddr cs)))
+    ((and cs (= (car cs) 65279)) (setq cs (cdr cs))))
+  (while cs
+    (setq c (car cs) cs (cdr cs) nx (car cs))
+    (cond
+      ((and inq (= c 34) (= nx 34)) (setq cur (cons 34 cur) cs (cdr cs)))
+      ((= c 34) (setq inq (not inq)))
+      ((and (not inq) (= c 44))
+       (setq out (cons (vl-string-trim " \t" (vl-list->string (reverse cur))) out) cur nil))
+      (T (setq cur (cons c cur)))))
+  (reverse (cons (vl-string-trim " \t" (vl-list->string (reverse cur))) out)))
+
 ;; (pfl:split s) -> "a, b, c" -> ("a" "b" "c"), each trimmed of spaces,
 ;;   tabs and quotes.  Comma-delimited only (Carlson's .dta files).
 (defun pfl:split (s / out cur)
@@ -297,13 +319,36 @@
 ;; (pfl:effname e) -> the real definition name, never the anonymous *U47.
 ;;   A dynamic block reports *U47 in DXF group 2 once a non-default state is
 ;;   set.  Every block-name comparison in V6 goes through here.
-(defun pfl:effname (e / obj r)
+;;   FAST (2026-11-20, the palette took a minute): a name that is not
+;;   anonymous IS the real name, so AutoCAD is asked only for "*" names, and
+;;   each anonymous definition only once -- remembered by its BLOCK record,
+;;   which is never reused for another block.  pfl:effname-forget empties the
+;;   memory; pfd:run does at every command start, the palette at every
+;;   rebuild.  PFSELFTEST group 20 checks this against AutoCAD's own answer.
+(setq *pfl-effname-memo* nil)
+
+(defun pfl:effname-forget () (setq *pfl-effname-memo* nil))
+
+(defun pfl:effname-com (e / obj r)
   (setq obj (vl-catch-all-apply 'vlax-ename->vla-object (list e)))
   (if (vl-catch-all-error-p obj)
     (cdr (assoc 2 (entget e)))
     (progn
       (setq r (vl-catch-all-apply 'vla-get-effectivename (list obj)))
       (if (vl-catch-all-error-p r) (cdr (assoc 2 (entget e))) r))))
+
+(defun pfl:effname (e / nm blk hit r)
+  (setq nm (cdr (assoc 2 (entget e))))
+  (cond
+    ((null nm) (pfl:effname-com e))
+    ((/= (substr nm 1 1) "*") nm)
+    ((and (setq blk (tblobjname "BLOCK" nm))
+          (setq hit (assoc blk *pfl-effname-memo*)))
+     (cdr hit))
+    (T
+     (setq r (pfl:effname-com e))
+     (if (and blk r) (setq *pfl-effname-memo* (cons (cons blk r) *pfl-effname-memo*)))
+     r)))
 
 ;; (pfl:bbox obj) -> (minx miny maxx maxy) | nil
 (defun pfl:bbox (obj / mn mx r)
@@ -388,8 +433,13 @@
 
 ;; (pfl:block-ents e all) -> the entity lists drawn directly in the insert.
 ;;   all nil = showing only;  all T = hidden ones too.
-(defun pfl:block-ents (e all / bd ent sd out)
-  (if (setq bd (tblobjname "BLOCK" (cdr (assoc 2 (entget e)))))
+(defun pfl:block-ents (e all)
+  (pfl:def-ents (cdr (assoc 2 (entget e))) all))
+
+;; (pfl:def-ents name all) -> the entity lists in block definition name.
+;;   all as above.  The same walk, by name -- for a nested symbol.
+(defun pfl:def-ents (name all / bd ent sd out)
+  (if (and name (setq bd (tblobjname "BLOCK" name)))
     (progn
       (setq ent (entnext bd))
       (while (and ent (setq sd (entget ent)) (/= "ENDBLK" (cdr (assoc 0 sd))))
@@ -413,6 +463,75 @@
                       out))))
   (vl-sort out '(lambda (a b) (> (- (caddr a) (cadr a)) (- (caddr b) (cadr b))))))
 
+;; (pfl:vsegs e) -> ((x ybot ytop) ...) EVERY vertical segment showing, in
+;;   BLOCK coordinates: LINEs and each segment of every LWPOLYLINE, a closed
+;;   one's closing segment too.  A barrel drawn as one rectangle is four
+;;   segments, two of them its walls.
+(defun pfl:vsegs (e / pts closed out p q)
+  (foreach sd (pfl:block-ents e nil)
+    (setq pts nil)
+    (cond
+      ((= "LINE" (cdr (assoc 0 sd)))
+       (setq pts (list (cdr (assoc 10 sd)) (cdr (assoc 11 sd))) closed nil))
+      ((= "LWPOLYLINE" (cdr (assoc 0 sd)))
+       (setq pts    (mapcar 'cdr (vl-remove-if-not '(lambda (g) (= 10 (car g))) sd))
+             closed (= 1 (logand 1 (cond ((cdr (assoc 70 sd))) (0)))))))
+    (if (and closed (cdr pts)) (setq pts (append pts (list (car pts)))))
+    (while (cdr pts)
+      (setq p (car pts) q (cadr pts) pts (cdr pts))
+      (if (and (< (abs (- (car p) (car q))) 1e-6) (> (abs (- (cadr p) (cadr q))) 1e-6))
+        (setq out (cons (list (car p) (min (cadr p) (cadr q)) (max (cadr p) (cadr q))) out)))))
+  out)
+
+;; (pfl:walls e r) -> (left-ybot right-ybot half-width) in WORLD Y | nil
+;;   The structure's two outer walls in profile and where each one stops at
+;;   the bottom -- the floor at that wall.  r: the barrel's half-width when
+;;   the block says it (PFBARREL_R; 2.0 on the 48" sanitary MH), else nil and
+;;   the outermost vertical segment on each side is taken.  The station line
+;;   (at X 0) is never a wall.  Read off what the insert SHOWS: no parameter
+;;   is nudged, so reading it never changes the drawing.
+(defun pfl:walls (e r / ed sy sx y0 segs lft rgt lx rx lb rb hw)
+  (setq ed   (entget e)
+        sx   (cond ((cdr (assoc 41 ed))) (1.0))
+        sy   (cond ((cdr (assoc 42 ed))) (1.0))
+        y0   (cadr (cdr (assoc 10 ed)))
+        segs (vl-remove-if '(lambda (s) (< (abs (car s)) 1e-3)) (pfl:vsegs e)))
+  (if r
+    (setq lft (vl-remove-if-not '(lambda (s) (< (abs (+ (car s) r)) 0.05)) segs)
+          rgt (vl-remove-if-not '(lambda (s) (< (abs (- (car s) r)) 0.05)) segs)))
+  ;; no wall at the stated width: the outermost on each side
+  (if (null lft)
+    (progn
+      (foreach s segs (if (and (< (car s) 0.0) (or (null lx) (< (car s) lx))) (setq lx (car s))))
+      (if lx (setq lft (vl-remove-if-not '(lambda (s) (< (abs (- (car s) lx)) 1e-3)) segs)))))
+  (if (null rgt)
+    (progn
+      (foreach s segs (if (and (> (car s) 0.0) (or (null rx) (> (car s) rx))) (setq rx (car s))))
+      (if rx (setq rgt (vl-remove-if-not '(lambda (s) (< (abs (- (car s) rx)) 1e-3)) segs)))))
+  (if (and lft rgt)
+    (progn
+      (setq lb (apply 'min (mapcar 'cadr lft))
+            rb (apply 'min (mapcar 'cadr rgt))
+            hw (* sx (max (abs (car (car lft))) (abs (car (car rgt))))))
+      (list (+ y0 (* sy lb)) (+ y0 (* sy rb)) hw))))
+
+;; (pfl:leader-path tip top right sf) -> ((pt start-width end-width) ...)
+;;   A leader from an arrow at tip to a label whose top row's insertion point
+;;   is top.  right = the label is right of the arrow.  A level landing that
+;;   stops *pf-pipe-land-gap* short of the row, a bend a landing's length
+;;   further from the text, a sloped leg back to the tip; the first segment
+;;   tapers from nothing to the arrow's width, which IS the arrowhead.  Sizes
+;;   at 1"=20', scaled by sf.  Shared by the pipe label and the crossing label.
+(defun pfl:leader-path (tip top right sf / dir land bend back)
+  (setq dir  (if right -1.0 1.0)
+        land (list (+ (car top) (* dir sf *pf-pipe-land-gap*)) (cadr top))
+        bend (list (+ (car land) (* dir sf *pf-pipe-land-len*)) (cadr land))
+        back (polar tip (angle tip bend) (* sf *pf-pipe-arrow-len*)))
+  (list (list tip  0.0 (* sf *pf-pipe-arrow-wid*))
+        (list back 0.0 0.0)
+        (list bend 0.0 0.0)
+        (list land 0.0 0.0)))
+
 ;; (pfl:station-line e) -> (ybot ytop) in WORLD Y | nil
 ;;   The vertical line at the block's X origin -- the station -- the longest
 ;;   if several.  Only when nothing is at the origin, the longest vertical
@@ -429,8 +548,12 @@
 
 ;; (pfl:geom-pts e) -> ((x y) ...) every vertex of the lines and polylines
 ;;   showing, BLOCK coordinates, in drawing order
-(defun pfl:geom-pts (e / out)
-  (foreach sd (pfl:block-ents e nil)
+(defun pfl:geom-pts (e) (pfl:sd-pts (pfl:block-ents e nil)))
+
+;; (pfl:sd-pts sds) -> ((x y) ...) every vertex of the LINEs and LWPOLYLINEs
+;;   in these entity lists, in order.  Shared by the two readers above/below.
+(defun pfl:sd-pts (sds / out)
+  (foreach sd sds
     (cond
       ((= "LINE" (cdr (assoc 0 sd)))
        (setq out (cons (list (cadr (assoc 11 sd)) (caddr (assoc 11 sd)))
@@ -439,6 +562,26 @@
        (foreach g sd
          (if (= 10 (car g)) (setq out (cons (list (cadr g) (caddr g)) out)))))))
   (reverse out))
+
+;; (pfl:nested-bottom e) -> WORLD Y of the lowest line / polyline vertex in
+;;   the plain symbols NESTED in insert e and showing in its current state |
+;;   nil when it shows none.  The headwall's profile symbol is one: its
+;;   geometry reaches below the flowline, and pfl:geom-bottom (which skips
+;;   nested blocks) can't see it.  Nested inserts are taken as unrotated; their
+;;   own insertion point and Y scale are applied, then the outer insert's.
+(defun pfl:nested-bottom (e / ed sy y0 lo ny nsy y)
+  (setq ed (entget e)
+        sy (cond ((cdr (assoc 42 ed))) (1.0))
+        y0 (cadr (cdr (assoc 10 ed))))
+  (foreach sd (pfl:block-ents e nil)
+    (if (= "INSERT" (cdr (assoc 0 sd)))
+      (progn
+        (setq ny  (cadr (cdr (assoc 10 sd)))
+              nsy (cond ((cdr (assoc 42 sd))) (1.0)))
+        (foreach p (pfl:sd-pts (pfl:def-ents (cdr (assoc 2 sd)) nil))
+          (setq y (+ y0 (* sy (+ ny (* nsy (cadr p))))))
+          (if (or (null lo) (< y lo)) (setq lo y))))))
+  lo)
 
 ;; (pfl:geom-ys e) -> the WORLD Y of each of those, same order | nil
 (defun pfl:geom-ys (e / ed sy y0)

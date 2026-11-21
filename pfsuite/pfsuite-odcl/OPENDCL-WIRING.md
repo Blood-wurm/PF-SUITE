@@ -109,7 +109,7 @@ faster than any of the ways this document was worked out.
 | Tree View | `SelChanged` | **`(Label Key)`** | label first |
 | Option List | `SelChanged` | **`(nIndex sLabel)`** | **index first — reversed vs the tree** |
 | Option List | `Clicked` | — | **does not exist**; Studio offers only `SelChanged` |
-| List View | `SelChanged` | **`(ItemIndexOrCount Value)`** | index first, like the Option List. **Read §4's List View note before using `Value`** |
+| List View | `Clicked` | **`(Row Column)`** | **a List View has NO `SelChanged`** -- its Events tab lists BeginLabelEdit, Clicked, ColumnClick, DblClicked ... (Studio, 2026-11-13). `(ItemIndexOrCount Value)` below was measured off a **List Box**; it never applied to a List View. V6 counts `Row` from 0 |
 
 ### The reversal is real
 
@@ -146,7 +146,7 @@ error. It is why a handler that chatters is worse than no handler.
 | Text Box | `dcl-Control-GetText` | works |
 | List Box | `dcl-ListBox-GetCurSel` / `GetText ctrl index` | works — vendor sample |
 | List Box | `dcl-ListBox-Clear` / `AddList ctrl <list of strings>` | works — vendor sample; **`AddList` is ADDITIVE, `Clear` first** |
-| List View | use the **event**, `SelChanged` | reports the selection; no getter needed for the single-select case |
+| List View | use the **event**, `Clicked` `(Row Column)` | reports the row clicked; there is no SelChanged (2026-11-13) |
 
 ### The whole List Box family, attested
 

@@ -53,13 +53,22 @@
     (cdr (assoc 1 (entget a)))))
 
 ;; (pfr:put e tag val) -> T | nil
+(setq *pfr-write-failures* 0)
+
+(defun pfr:write-failed (e what)
+  (setq *pfr-write-failures* (1+ *pfr-write-failures*))
+  (prompt (strcat "\n  ** PFSUITE write FAILED: " what
+                  (if (and e (entget e) (assoc 5 (entget e)))
+                    (strcat " on " (cdr (assoc 5 (entget e)))) "")))
+  nil)
+
 (defun pfr:put (e tag val / a ed)
   (if (setq a (pfr:attr-ent e tag))
     (progn
       (setq ed (entget a))
-      (entmod (subst (cons 1 (if val val "")) (assoc 1 ed) ed))
-      (entupd e)
-      T)))
+      (if (entmod (subst (cons 1 (if val val "")) (assoc 1 ed) ed))
+        (progn (entupd e) T)
+        (pfr:write-failed e tag)))))
 
 ;; (pfr:att-style e tag) -> the attribute's text style | nil
 (defun pfr:att-style (e tag / a)
@@ -118,7 +127,7 @@
 ;; digit -- never bare text that could be mistaken for one of these keys.
 (setq *pfr-keys* (list *pf-xd-memb* *pf-xd-src* *pf-xd-schema*
                        *pf-xd-plan* *pf-xd-line* *pf-xd-pos* *pf-xd-seen*
-                       *pf-xd-pipe*
+                       *pf-xd-pipe* *pf-xd-xing*
                        *pf-xd-cl* *pf-xd-pro-inv* *pf-xd-pro-top* *pf-xd-tin-ex*
                        *pf-xd-tin-des* *pf-xd-mat* *pf-xd-sums* *pf-xd-stamp*
                        *pf-xd-released*))
@@ -153,10 +162,11 @@
     (foreach c (pfr:chunks (cdr p))
       (setq dat (cons (cons 1000 c) dat))))
   (setq ed (entget e))
-  (entmod
-    (append (vl-remove-if '(lambda (x) (= -3 (car x))) ed)
-            (list (list -3 (cons *pf-app* (reverse dat))))))
-  T)
+  (if (entmod
+        (append (vl-remove-if '(lambda (x) (= -3 (car x))) ed)
+                (list (list -3 (cons *pf-app* (reverse dat))))))
+    T
+    (pfr:write-failed e "XDATA")))
 
 ;; (pfr:xd-get e key) -> string | nil
 (defun pfr:xd-get (e key)
@@ -281,18 +291,18 @@
   (cond
     ((null (pfr:attr-ent e tag)) nil)
     ((pfr:asserted-p e tag) 'kept)
-    ((and ent (/= (strcase (if cur cur "")) (strcase (if (caddr ent) (caddr ent) ""))))
-     (pfr:src-put e tag *pf-src-asserted* cur)
-     'adopted)
+    ;; Attribute text is case-sensitive: changing STA. to Sta. is a hand edit.
+    ((and ent (/= (if cur cur "") (if (caddr ent) (caddr ent) "")))
+      (if (pfr:src-put e tag *pf-src-asserted* cur) 'adopted 'failed))
     (T
-      (pfr:put e tag val)
-      (pfr:src-put e tag src val)
-      'written)))
+      (if (pfr:put e tag val)
+        (if (pfr:src-put e tag src val) 'written 'failed)
+        'failed))))
 
 ;; (pfr:assert e tag val) -> T    A human said so.  Sticky from here on.
 (defun pfr:assert (e tag val)
   (if (pfr:put e tag val)
-    (progn (pfr:src-put e tag *pf-src-asserted* val) T)))
+    (pfr:src-put e tag *pf-src-asserted* val)))
 
 
 ;;; ==========================================================================
@@ -305,11 +315,23 @@
   (and (> (strlen s) 0)
        (vl-every '(lambda (c) (<= 48 c 57)) (vl-string->list s))))
 
+;; (pfr:size-p s) -> T for a size as a block name spells it: digits ("24"),
+;;   or digits, *pf-size-by*, digits ("24x36" -- a box headwall, Jake,
+;;   2026-11-12).  Any case.  Nothing else: "24x", "x36", "24x36x48" are not.
+(defun pfr:size-p (s / up i)
+  (setq up (strcase s)
+        i  (vl-string-search (strcase *pf-size-by*) up))
+  (if i
+    (and (pfr:digits-p (substr up 1 i))
+         (pfr:digits-p (substr up (+ i 1 (strlen *pf-size-by*)))))
+    (pfr:digits-p up)))
+
 ;; (pfr:row-for nm) -> the *pf-blocks* row this block name belongs to | nil
 ;;   The name must BE the root (PFSUITE_CBI) or the root plus a numeric size
-;;   (PFSUITE_DBI_04) -- nothing else.  Every block in the suite is named
-;;   PFSUITE_<name> (Jake, 2026-10-15), so "starts with the root" would read
-;;   any PFSUITE_CBI_<anything> as a CBI.  Order in *pf-blocks* is irrelevant.
+;;   (PFSUITE_DBI_04, PFSUITE_HDWL_24x36) -- nothing else.  Every block in the
+;;   suite is named PFSUITE_<name> (Jake, 2026-10-15), so "starts with the
+;;   root" would read any PFSUITE_CBI_<anything> as a CBI.  Order in
+;;   *pf-blocks* is irrelevant.
 (defun pfr:row-for (nm / up root pre hit)
   (setq up (strcase nm))
   (foreach r *pf-blocks*
@@ -319,7 +341,7 @@
              (or (= up root)
                  (and (> (strlen up) (strlen pre))
                       (= (substr up 1 (strlen pre)) pre)
-                      (pfr:digits-p (substr up (1+ (strlen pre)))))))
+                      (pfr:size-p (substr up (1+ (strlen pre)))))))
       (setq hit r)))
   hit)
 
@@ -346,17 +368,29 @@
 ;;   state would cost a COM call on every structure on every run.
 (defun pfr:view (e) (pfr:get e *pf-tag-view*))
 
+;; (pfr:name-filter) -> "PFSUITE_CBI,PFSUITE_CBI_*,...,`*U*"   every name one
+;;   of our structures can have: a root, a root + size, or anonymous (a
+;;   dynamic block once a property is set).  pfr:row-for still decides; this
+;;   only keeps the drawing's other blocks out of the search (2026-11-20).
+(defun pfr:name-filter ( / out)
+  (setq out "`*U*")
+  (foreach r *pf-blocks*
+    (setq out (strcat (cadr r) "," (cadr r) *pf-size-sep* "*," out)))
+  out)
+
 ;; (pfr:all view) -> list of enames.  view nil = both.  A RELEASED block (its
 ;;   grid removed by PFREMOVE) is not ours any more and is never returned.
-(defun pfr:all (view / ss i e out)
-  (if (setq ss (ssget "_X" '((0 . "INSERT"))))
+;;   PFSELFTEST group 20 checks it finds the same blocks as a search of
+;;   every insert.
+(defun pfr:all (view / ss i e v out)
+  (if (setq ss (ssget "_X" (list '(0 . "INSERT") (cons 2 (pfr:name-filter)))))
     (progn
       (setq i 0)
       (while (< i (sslength ss))
         (setq e (ssname ss i))
         (if (and (pfr:ours-p e)
                  (or (null view)
-                     (= (strcase view) (strcase (if (pfr:view e) (pfr:view e) ""))))
+                     (= (strcase view) (strcase (if (setq v (pfr:view e)) v ""))))
                  (not (pfr:released-p e)))
           (setq out (cons e out)))
         (setq i (1+ i)))))
@@ -394,16 +428,27 @@
   (if (and (setq d (pfr:nod nil)) (setq cur (dictsearch d (pfr:stub-key ty name))))
     (cdr (member (assoc 100 cur) cur))))
 
+;; (pfr:xrec-put d key data) -> T | nil   create or REPLACE the XRECORD under
+;;   key in dictionary d.  data: its groups, ((1 . "x") (2 . "y") ...).
+;;   Replaced by removing the old record and adding a new one: entmod on an
+;;   existing XRECORD reports success and changes nothing (PFSELFTEST group
+;;   13, 2026-11-17).  The one way the suite writes a dictionary record --
+;;   line stubs here, saved label defaults in pf-defaults.
+(defun pfr:xrec-put (d key data / cur made)
+  (if (and d (setq cur (dictsearch d key)))
+    (progn (dictremove d key) (entdel (cdr (assoc -1 cur)))))
+  (if (and d
+           (setq made (entmakex (append (list '(0 . "XRECORD") '(100 . "AcDbXrecord")) data)))
+           (dictadd d key made))
+    T
+    (pfr:write-failed nil (strcat "dictionary record " key))))
+
 ;; (pfr:stub-put ty name cl inv top) -> T   create or replace
-(defun pfr:stub-put (ty name cl inv top / d k cur)
-  (setq d (pfr:nod T) k (pfr:stub-key ty name))
-  (if (setq cur (dictsearch d k))
-    (progn (dictremove d k) (entdel (cdr (assoc -1 cur)))))
-  (dictadd d k (entmakex (list '(0 . "XRECORD") '(100 . "AcDbXrecord")
-                               (cons 1 (cond (cl) ("")))
-                               (cons 2 (strcase ty)) (cons 3 (strcase name))
-                               (cons 4 (cond (inv) (""))) (cons 5 (cond (top) (""))))))
-  T)
+(defun pfr:stub-put (ty name cl inv top)
+  (pfr:xrec-put (pfr:nod T) (pfr:stub-key ty name)
+                (list (cons 1 (cond (cl) ("")))
+                      (cons 2 (strcase ty)) (cons 3 (strcase name))
+                      (cons 4 (cond (inv) (""))) (cons 5 (cond (top) (""))))))
 
 ;; (pfr:stub-del ty name) -> nil
 (defun pfr:stub-del (ty name / d k cur)
@@ -565,12 +610,15 @@
 ;;; ==========================================================================
 ;;; SECTION 8  --  Drafter inputs shared across blocks
 ;;; ==========================================================================
-;;; Some attributes are drafter INPUTS that must read the same on every block
-;;; of a kind: the structure's PFSTAPRE etc., the pipe's PFLENPRE etc.  Type a
-;;; new value on ANY block and the next run pushes it to all of them.  Two
-;;; different new values is a disagreement: reported, and the old value stays
-;;; until someone settles it.  ONE copy of this logic, for every kind
-;;; (Jake, 2026-10-16: the pipe's inputs are shared too).
+;;; DIAGNOSTIC ONLY since 2026-11-17: production inputs come from the saved
+;;; defaults (pf-defaults) and a typed value stays on its block.  PFSELFTEST
+;;; still uses this to build explicit inputs over its own test blocks.
+;;;
+;;; Make the drafter INPUTS read the same on every block given: the
+;;; structure's PFSTAPRE etc., the pipe's PFLENPRE etc.  A new value on ANY
+;;; of them goes to all of them.  Two different new values is a
+;;; disagreement: reported, and the old value stays.  ONE copy of this logic,
+;;; for every kind.
 ;;;
 ;;; A value still at its default, never written by the tool (a freshly placed
 ;;; block), is NOT an edit -- otherwise every new pipe, whose inputs come in

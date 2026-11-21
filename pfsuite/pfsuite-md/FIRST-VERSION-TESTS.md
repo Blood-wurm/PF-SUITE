@@ -41,10 +41,10 @@ wanted and what it got) or SKIP (with why).
 | 6 PFSETUP | Scan (named, `.pro` pair bound, no `.cl` skipped, nothing named twice, grid-name text read); Anchor from a stub and from a blank form; the same line refused; Edit (new name refused, different range refused, a change written in place); a copied anchor named | H1–H3, H7, H10–H13 |
 | 7 PFASSIGN | Names by station, a junction on both lines, stations off the `.cl`, face from the through-line, a second run changes nothing, a new structure renumbers the rest, a typed name kept, moved off the line | A2, B15, B16, G5, G7–G10 |
 | 8 PFSTRUCT | Four copies (the junction on both grids) at station and rim, the CONST. row, text height, rows at the grid top, PFTOP to the end of row 1, a typed name on its copy, the junction's station rows, a second run places nothing, a copied plan structure warned | A4, A5, B7, G6, C (all) |
-| 9 PFREFRESH | 0 updated right after PFSTRUCT; a new rim moves only that copy; a typed row kept; a dragged row and PFDEPTH left alone; PFSTAPRE follows on every copy; a new size follows; moved in plan without PFASSIGN named and not moved, then follows after PFASSIGN; assigned but not placed listed; a copied copy erased; an erased plan structure's copy erased | A6, A8, B1–B6, B8, B10, E1–E6, E11, E12 |
+| 9 PFREFRESH | 0 updated right after PFSTRUCT; a new rim moves only that copy; a typed row kept; a dragged row and PFDEPTH left alone; a typed PFSTAPRE stays on its copy; a new size follows; moved in plan without PFASSIGN named and not moved, then follows after PFASSIGN; assigned but not placed listed; uncertain copies held for review | A6, A8, B1–B6, B8, B10, E1–E6, E11, E12 |
 | 10 PFPIPE | The two rows (whole feet, slope to 0.1%), uphill warned, PFLENPRE follows, a stretch updates the length, a new size the diameter; dragged out: arrow on the bottom at the middle, 2.5 long, filled, level landing 1 unit short, left- or right-justified, arrow on the top when above, outside the wall with walls on; 0 updated after; an erased leader redrawn; an erased pipe's leader erased | A7, B11, E7–E9, F2–F10 |
 | 11 PFREMOVE | After Remove Anchor, PFREFRESH leaves the released copy alone and PFASSIGN drops the line from the name | H4–H6 |
-| 12 Palette | The trees' rows (a gridded line, a line with no grid yet), the panels (datum, stations, `.cl`, a stub's `.pro`, "(not set)"), and a button refusing with the reason. Group 7 also checks Assign for one line | — |
+| 12 Palette | The trees' rows (a gridded line, a line with no grid yet), the panels (datum, stations, `.cl`, a stub's `.pro`, "(not set)"), and a button refusing with the reason. The Run tab's structure list: names and stations by station, each status (placed, not placed, no rim, moved since Assign), the row picked from its row number (a click on no row leaves the pick), Edit Attributes refusing with no structure picked, finding the structure's copy on the line, and the line refreshed after (a rim moves the copy, a prefix typed on one copy reaches the other). Group 7 also checks Assign for one line | — |
 
 **A FAIL** names what it wanted and what it got: paste it. A whole group
 "stopped" is a crash in the suite code; paste that too.
@@ -82,6 +82,9 @@ First, in Studio: the settings in `pf-palette\README.md` ("Studio settings"), th
 | P7 | **New Pipe** | PFPIPE's clicks work from the palette |
 | P8 | Any button with no line picked | "pick a line in the tree first" |
 | P9 | UNDO once after a palette button | That whole run goes back |
+| P10 | Run tab: pick a line, then a structure in the list, then **Edit Attributes** | The list shows the line's structures by station with a status. The dialog opens on the plan block (name, rim, face -- the hidden ones listed too?), then on its profile copy (prefixes, suffixes, rows). Change a rim and a PFSTAPRE: the copy moves and every copy on the line takes the new prefix |
+| P11 | **Edit Attributes** on a structure with no copy on that line | Plan block only, and it says so |
+| P12 | UNDO once after Edit Attributes | Both edits and the refresh go back |
 
 ## 3. ATTSYNC check (after any block change)
 

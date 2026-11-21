@@ -45,3 +45,8 @@ is measured against the file, not asked of Carlson:
 - **Stacked structures are named.** Two plan structures within 0.5' of each other (one drawn on top of the other) would share a number; PFREFRESH and PFLINETEST say so (`pfm:stacked`).
 - **Headwalls count.** V5 numbers them and V5 is right (Jake, 2026-10-27). Until `PFSUITE_HDWL` exists, the blocks in `*pf-count-only*` (pf-cfg: `HDWL`, `HDWL_<size>`) take their number on a line but are never named, placed, refreshed or erased (`pfm:others`). **Empty that list once PFSUITE_HDWL is built.**
 - **Otherwise only `PFSUITE_` blocks are counted.** A V5 structure block still on a line is skipped until it is replaced (PFREPLACE) or its type exists in V6.
+
+## Added 2026-11-20
+
+- **A face per line** (`pfm:face`, `pfm:face-of`): kept on each MEMB entry as a 4th item, `(line station offset face)`. The flow always leaves through the back (first letter B); only the upstream side is read; the outlet end takes the back, the top of a line straight through. A downstream side that isn't the back is reported and not written. The plan block's PFFACE is the through-line's. A MEMB from before (no faces) reads as changed, so PFASSIGN fills the faces once.
+- **The plan label** (`pfm:plan-label`): PFPLABEL = the name, height from the PFPLANHT setting, put back where it was dragged after an ATTSYNC.

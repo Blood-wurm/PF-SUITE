@@ -26,7 +26,7 @@
 ;; (pfd:run name fn) -> fn's result.   THE command wrapper.
 ;;   One UNDO group around the whole command, so one UNDO takes it back.  An
 ;;   error or Esc still closes the group, and an error names the stage.
-(defun pfd:run (name fn / *error* doc r)
+(defun pfd:run (name fn / *error* doc r before)
   (setq doc (vla-get-activedocument (vlax-get-acad-object)))
   (defun *error* (msg)
     (vl-catch-all-apply 'vla-endundomark (list doc))
@@ -36,9 +36,15 @@
                        ": " msg)))
     (princ))
   (setq *pfd-stage* nil)
+  ;; block names learned before this command may be out of date (a RENAME)
+  (pfl:effname-forget)
+  (setq before (if (boundp '*pfr-write-failures*) *pfr-write-failures* 0))
   (vla-startundomark doc)
   (setq r (apply fn nil))
   (vla-endundomark doc)
+  (if (and (boundp '*pfr-write-failures*) (> *pfr-write-failures* before))
+    (pfl:say (strcat "  ** " (itoa (- *pfr-write-failures* before))
+                     " write(s) FAILED; review the messages above.")))
   r)
 
 ;; (pfd:try label fn args) -> fn's result, or nil after saying what failed.
@@ -47,9 +53,11 @@
 ;;   with nothing to say where (2026-10-15).
 (defun pfd:try (label fn args / r)
   (setq *pfd-stage* nil
+        *pfd-try-failed* nil
         r (vl-catch-all-apply fn args))
   (if (vl-catch-all-error-p r)
     (progn
+      (setq *pfd-try-failed* T)
       (pfl:say (strcat "  ** " label " FAILED"
                        (if *pfd-stage* (strcat " while " *pfd-stage*) "")
                        ": " (vl-catch-all-error-message r)))
@@ -162,6 +170,45 @@
                               (list (list 10 (car (car v)) (cadr (car v)))
                                     (cons 40 (cadr v)) (cons 41 (caddr v))))
                            verts)))))
+
+
+;; (pfd:line p1 p2 layer) -> ename | nil    a LINE in model space
+(defun pfd:line (p1 p2 layer)
+  (entmakex (list '(0 . "LINE") '(100 . "AcDbEntity") '(410 . "Model") (cons 8 layer)
+                  '(100 . "AcDbLine")
+                  (list 10 (car p1) (cadr p1) 0.0) (list 11 (car p2) (cadr p2) 0.0))))
+
+;; (pfd:text pt s layer ht rot just style) -> ename | nil   a TEXT in model
+;;   space.  just: 'ML 'MR 'MC (middle row, like the attributes).  style nil
+;;   = the current one.
+(defun pfd:text (pt s layer ht rot just style / h p3)
+  (setq h  (cond ((eq just 'MR) 2) ((eq just 'MC) 1) (T 0))
+        p3 (list (car pt) (cadr pt) 0.0))
+  (entmakex (list '(0 . "TEXT") '(100 . "AcDbEntity") '(410 . "Model") (cons 8 layer)
+                  '(100 . "AcDbText") (cons 10 p3) (cons 40 ht) (cons 1 s) (cons 50 rot)
+                  (cons 7 (cond (style) ((getvar "TEXTSTYLE"))))
+                  (cons 72 h) (cons 11 p3) '(100 . "AcDbText") '(73 . 2))))
+
+;; (pfd:dim-vert p1 p2 x layer txt) -> ename | nil   a vertical rotated
+;;   dimension from p1 to p2, its dimension line at X x, text replaced by txt.
+;;   The current dimension style and DIMSCALE size it, like a drafter's.
+(defun pfd:dim-vert (p1 p2 x layer txt / ms d)
+  (setq ms (vla-get-modelspace (vla-get-activedocument (vlax-get-acad-object)))
+        d  (vl-catch-all-apply 'vla-adddimrotated
+             (list ms (vlax-3d-point (list (car p1) (cadr p1) 0.0))
+                   (vlax-3d-point (list (car p2) (cadr p2) 0.0))
+                   (vlax-3d-point (list x (/ (+ (cadr p1) (cadr p2)) 2.0) 0.0))
+                   (/ pi 2.0))))
+  (if (not (vl-catch-all-error-p d))
+    (progn
+      (vl-catch-all-apply 'vla-put-layer (list d layer))
+      (if txt (vl-catch-all-apply 'vla-put-textoverride (list d txt)))
+      (vlax-vla-object->ename d))))
+
+;; (pfd:color e color) -> T | nil   an entity's colour: 1 red, 256 ByLayer
+(defun pfd:color (e color / r)
+  (setq r (vl-catch-all-apply 'vla-put-color (list (vlax-ename->vla-object e) color)))
+  (not (vl-catch-all-error-p r)))
 
 
 ;;; ==========================================================================

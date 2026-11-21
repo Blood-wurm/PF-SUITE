@@ -29,12 +29,9 @@
 ;;; Items marked HOLE are unanswered.  They are named so the gate can report
 ;;; them, not so they can be guessed at.
 ;;;
-;;; LATER (Jake, 2026-09-17): crossing clearances need the MATERIAL WALL
-;;; THICKNESS of every material in use -- clearance is outside-to-outside, so
-;;; a nominal diameter is not enough.  User enters materials and thicknesses
-;;; once.  Check first whether Carlson already ships a material/wall-thickness
-;;; library (pipesize.dta / mpipesize.dta under usrdir$ are candidates --
-;;; read them before building a table by hand).
+;;; Pipe materials and sizes (inside and outside diameters) live in ONE table
+;;; kept with the lisp, pf-cfg\pf-pipes.csv (Jake, 2026-11-20) -- SECTION 10.
+;;; Carlson's pipesize.dta / pipen.dta are no longer read.
 ;;; ==========================================================================
 
 (setq *pf-schema* 1)               ; record version.  Bump on ANY name change.
@@ -43,10 +40,14 @@
 ;;; ==========================================================================
 ;;; SECTION 1  --  Block definitions
 ;;; ==========================================================================
-;;; ONE definition per TYPE, sizes inside it (2026-09-22): PFSUITE_CBI carries
+;;; Usually one definition per TYPE, sizes inside it (2026-09-22): PFSUITE_CBI carries
 ;;; a PFSIZE_LU lookup that drives every size-dependent dimension, and the
 ;;; PFSIZE attribute is a field on that lookup.  Variants within a type are
 ;;; visibility states -- PLAN plus the nine-state face matrix on a CBI.
+;;; HDWL is the fixed-size exception: PFSUITE_HDWL_12, _15, etc. have PLAN
+;;; and PROFILE states and no PFSIZE_LU lookup.  The sanitary draft is a
+;;; manually sized exception: its cone width/height grips are independent of
+;;; the nominal PFSIZE attribute.
 ;;; (The first design, 2026-09-11, was one definition per type PER SIZE,
 ;;; PFSUITE_CBI_04 .. _12, after the company's CBI_MH_04 convention.  It was
 ;;; replaced; a sized name is still READ, see below.)
@@ -65,7 +66,7 @@
   '((CBI        "PFSUITE_CBI"        *pf-states-face*)
     (CBI-BOX    "PFSUITE_CBI_BOX"    *pf-states-one*)
     (DBI        "PFSUITE_DBI"        *pf-states-one*)
-    (SMH        "PFSUITE_SMH"        *pf-states-one*)
+    (SMH        "PFSUITE_SMH"        *pf-states-cone*)
     (DMH        "PFSUITE_DMH"        *pf-states-one*)
     (MH         "PFSUITE_MH"         *pf-states-one*)
     (HDWL       "PFSUITE_HDWL"       *pf-states-one*)))
@@ -76,6 +77,9 @@
 ;; (itoa 4) would not find either.
 (setq *pf-size-sep*   "_")
 (setq *pf-size-width* 2)           ; zero-padded to this many digits
+;; A box size in a name: PFSUITE_HDWL_24x36 (Jake, 2026-11-12: headwalls are
+;; one block PER SIZE, box sizes included).  Matched in any case.
+(setq *pf-size-by*    "x")
 
 ;; The dynamic Visibility parameter's NAME, as typed in the Block Editor.
 ;; NOT frozen -- pf-record DISCOVERS it, by walking the block definition's
@@ -91,9 +95,13 @@
 ;; Profile states for a block that carries the face matrix.  The value of the
 ;; PFFACE attribute IS the state name -- 1:1, no mapping table between the
 ;; record and the drawing.
-;;   first letter  = face the .cl ENTERS through
-;;   second letter = face the .cl LEAVES through
+;;   first letter  = face the .cl ENTERS through (its LOWER-station side --
+;;                   downstream, where the flow LEAVES)
+;;   second letter = face the .cl LEAVES through (its higher-station side)
 ;;   B back / F front / S side
+;; Flow always leaves an inlet through its BACK (Jake, 2026-11-20), so in
+;; practice the first letter is B: BB, BF or BS.  The order is unchanged --
+;; "the inlets have been fine so far".
 (setq *pf-states-face*
   '("BB" "BF" "BS"
     "FB" "FF" "FS"
@@ -101,6 +109,13 @@
 
 ;; Profile state for a block with no matrix.
 (setq *pf-states-one* '("PROFILE"))
+
+;; Profile states for the sanitary MH: one per cone (Jake, 2026-11-19).  The
+;; 48" barrel is drawn once and shown in all three; each state shows its own
+;; cone.  The copy's PFSIZE IS the state name -- typed on the plan block,
+;; copied by PFSTRUCT, followed by PFREFRESH -- the way PFFACE is a CBI's
+;; state.  Matched in any case, spaces ignored (pfs:cone-state).
+(setq *pf-states-cone* '("48x24" "48x30" "48x36"))
 
 
 ;;; ==========================================================================
@@ -115,7 +130,7 @@
 (setq *pf-tag-type*   "PFTYPE")    ; CBI / DBI / SMH / DMH / MH / HDWL
 (setq *pf-tag-size*   "PFSIZE")    ; nominal size, as it should print
 (setq *pf-tag-pos*    "PFPOS")     ; position tag -- drives elevation (§4)
-(setq *pf-tag-rim*    "PFRIM")     ; reference elevation
+(setq *pf-tag-rim*    "PFRIM")     ; reference elevation; HDWL = flowline at basepoint
 (setq *pf-tag-struct* "PFSTRUCT")  ; Carlson structure-library entry
 (setq *pf-tag-inlet*  "PFINLET")   ; Carlson inlet-library entry, "" = no flow
 (setq *pf-tag-view*   "PFVIEW")    ; PLAN | PROFILE -- see below
@@ -153,13 +168,13 @@
         "PFTEXT2"                     ; W/ CURB INLET CASTING  (type-dependent)
         "PFELEV"))                    ; G.L. 769.13
 
-;; DRAFTER INPUTS, shared PER BLOCK TYPE (Jake, 2026-10-27).  V5 kept these in
-;; a settings dialog; here they are attributes on the block, typed once and
-;; pushed to every structure of that type by the sync -- so the drawing carries
-;; its own wording and there is no settings file to lose.  Editing one on a CBI
-;; changes every CBI; a DBI keeps its own.  Two attributes disagreeing is
-;; reported, never resolved by guessing; the adopted one is whichever no
-;; longer matches what the tool last wrote.
+;; DRAFTER INPUTS.  V5 kept these in a settings dialog; here they are
+;; attributes on each profile copy, filled from SAVED DEFAULTS kept in the
+;; drawing -- line, then utility, then drawing, then the type's built-in
+;; default below (pf-defaults; the palette's Defaults button, PFDEFAULTS).
+;; The drawing carries its own wording; there is no settings file to lose.
+;; A value typed on one copy stays on that copy (Jake, 2026-11-17: this
+;; replaces the 2026-10-27 push to every block of a type).
 (setq *pf-tag-sta-pre*  "PFSTAPRE")   ; before the station      "STA."
 (setq *pf-tag-sta-suf*  "PFSTASUF")   ; after it, [line] allowed
 (setq *pf-tag-con-pre*  "PFCONPRE")   ; starts the construction row  "CONST. CURB BOX INLET"
@@ -186,7 +201,8 @@
 (setq *pf-draw-row-offset* 1.0)    ; x text height, station line -> PFSTA1
 (setq *pf-draw-row-gap*    1.5)    ; x text height, between the rest of the rows
 
-;; Consistency scopes the sync enforces:
+;; Consistency scopes (from the per-type push; nothing reads these since the
+;; saved defaults replaced it, 2026-11-17 -- kept so no name is lost):
 ;;   drawing-wide -- every structure in the drawing must agree
 ;;   per-name     -- every block sharing a PFNAME must agree
 (setq *pf-tags-drawing-wide* *pf-tags-fmt*)
@@ -219,6 +235,11 @@
 ;;; The invert TICKS are per copy: each profile copy shows only its own
 ;;; line's inverts.
 (setq *pf-param-depth* "PFDEPTH")     ; vertical linear parameter -- drafter's
+;; SMH floor: PFDEPTH sets the whole floor, PFFLOORDWN one end of it -- the
+;; drafter's drop (0.1 is the standard).  A linear grip, straight down the
+;; wall, carried along by PFDEPTH.  The tool never sets or reads it; PFGATE
+;; only checks it (Jake, 2026-11-19).
+(setq *pf-param-floor* "PFFLOORDWN")
 
 ;; The station line up to the grid top, with the label rows on its top end.
 ;; V5 puts a structure's callout at the GRID TOP, not beside the structure --
@@ -227,14 +248,14 @@
 ;; the same top-of-grid probe V5 uses (Q3: the probe stays).
 (setq *pf-param-top* "PFTOP")
 
-;; Which catalog size is inserted.  A Lookup parameter, not a Distance --
+;; Which catalog size is inserted on lookup blocks.  A Lookup parameter, not a Distance --
 ;; drives PFOD_R/PFID_R/PFSLAB off the size table (pf-cfg carries no copy of
 ;; that table; it lives only in the block's own Lookup Table, same reason
 ;; sizes-per-type live in the block folder, not here -- see SECTION 1).
-;; PFSIZE the ATTRIBUTE is field-linked to this parameter in the block
-;; definition, not independently written -- so PFSTRUCT copies THIS value from
-;; plan to profile copy, never PFSIZE's text (which is read-only, driven by
-;; the field, and copying it would do nothing).
+;; On lookup blocks PFSIZE the ATTRIBUTE is field-linked to this parameter;
+;; PFSTRUCT copies the lookup value.  Fixed-size HDWL uses its block name,
+;; and the SMH copies the plan PFSIZE attribute instead -- its cone size,
+;; which also picks its profile state (*pf-states-cone*).
 (setq *pf-param-size* "PFSIZE_LU")
 
 ;; The profile barrel's half-width, station line to barrel edge.  A column in
@@ -274,11 +295,19 @@
 (setq *pf-face-probe* 5.0)         ; feet either side of the structure
 (setq *pf-face-warn*  5.0)         ; degrees from a corner that gets a warning
 
-;; PFFACE lives on the PLAN insert, one value per structure.
-;; A junction has exactly ONE through-line; every other line starts or ends
-;; there.  The through-line is the one whose stations continue past the
-;; structure on BOTH sides -- see pf-model's through-line test.  Zero or two
-;; through-lines is a warning, not a guess.
+;; ONE FACE PER LINE (Jake, 2026-11-20).  Each line the structure is on gets
+;; its own face, kept in its MEMB entry: (line station offset face).  The
+;; profile copy on that line shows that line's face.  The plan block's
+;; PFFACE attribute keeps the through-line's face (the line that runs on both
+;; sides of it), or the only line's.  A PFFACE typed by hand on the plan block
+;; wins on every copy.
+;; Only the UPSTREAM side is read: the flow always leaves through the back,
+;; *pf-face-out*.  A downstream side that reads anything else is reported --
+;; the inlet is turned wrong in plan -- and that line's face is not written.
+;; At the top of a line (nothing upstream) the line is taken as running
+;; straight through: the face opposite the back, *pf-face-opposite*.
+(setq *pf-face-out* "B")
+(setq *pf-face-opposite* '(("B" . "F") ("F" . "B") ("S" . "S")))
 (setq *pf-face-none* "")           ; no matrix on this block type
 
 
@@ -313,6 +342,13 @@
 ;; On a pipe label's leader: the handle of the pipe it belongs to.
 (setq *pf-xd-pipe*   "PIPE")
 
+;; Crossings (PFXLABEL, 2026-11-20).  On a PFSUITE_XING block: what it marks,
+;; (target-line target-station source-line source-station).  On everything
+;; the tool draws for it (dimension, wall ticks and note, leader): the
+;; crossing block's handle, so PFREFRESH redraws it with its block and erases
+;; it when the block is gone.
+(setq *pf-xd-xing*   "XING")
+
 ;; ON A GRID ANCHOR (Jake, 2026-10-30: V6's own records, not V5's ledger).
 ;; Written by PFSETUP (pf-grid); read by pfg:grid before V5's ledger.  The .cl
 ;; is ALSO the CL attribute, so it shows in Properties -- the two must agree.
@@ -340,7 +376,9 @@
 ;;   4 -- 2026-10-22: the leader is drawn by the tool, not held in the block.
 ;;   5 -- 2026-10-27: CBI rows built from the attributes only (no type
 ;;        wording); a label dragged inside the pipe goes back to the centre.
-(setq *pf-fp-ver*    5)
+;;   6 -- 2026-11-20: a face per line, invert rows, pipe sizes from the
+;;        table (PFID / PFOD).
+(setq *pf-fp-ver*    6)
 
 ;; Provenance is an ALIST keyed by tag, not a scalar.  PFRIM was the first
 ;; derived attribute and PFFACE is the second; a key per attribute does not
@@ -374,9 +412,9 @@
 ;;;   GRATE  -- being a grate is not a place.  A grate inlet still sits either
 ;;;             in the road or out of it; the depression comes off PFTYPE.
 ;;;   HDWL   -- headwall is a type, and it sits out of the road, so its
-;;;             position is SURFACE like anything else there.  It gets a real
-;;;             elevation in PFRIM; it just is not LABELLED by default
-;;;             (*pf-types-nolabel*).
+;;;             position is SURFACE.  Its PFRIM is the FLOWLINE at the block
+;;;             basepoint, entered by the drafter; it is not a TIN surface
+;;;             elevation and is not drawn as an elevation row.
 ;;;   FIELD  -- a hand-typed rim is already ASSERTED in the provenance, which
 ;;;             skips the rule.  Storing it here too is how two records drift.
 ;;;
@@ -408,10 +446,8 @@
 ;;; These used to be PFPOS values.  They are properties of WHAT a structure is,
 ;;; so they are keyed by type and the position rule stays clean.
 
-;; Types whose PFRIM is derived and stored like any other, but NOT drawn on
-;; the sheet unless asked for.  A headwall has a real top elevation worth
-;; keeping; it just is not a rim callout.  Storage and labelling are separate
-;; decisions -- one value, one place, and the sheet is a projection of it.
+;; Types whose PFRIM is stored but NOT drawn as an elevation row by default.
+;; For HDWL it is the flowline at the block basepoint, entered by the drafter.
 (setq *pf-types-nolabel* '("HDWL"))
 
 ;; Types whose rim is the position rule's answer LESS a grate depression.
@@ -606,7 +642,7 @@
 ;; 2026-10-27: headwalls count; V5 numbers them).  The tree counts them and
 ;; never names, places, refreshes or erases them.  A name matches as the root
 ;; alone or root + "_" + anything starting with a digit (HDWL_24, HDWL_24x36).
-;; TEMPORARY: empty this once PFSUITE_HDWL exists.
+;; Keep legacy HDWL_* count-only until those inserts are replaced in drawings.
 (setq *pf-count-only* '("HDWL"))
 
 ;; Station slack at a line's ends, and between two structures when numbering.
@@ -628,8 +664,8 @@
 ;;; DEFAULTS ONLY, per block type (Jake, 2026-10-27).  The labels are built
 ;;; from the attributes alone; these are what a type's PFCONPRE / PFELEVPRE
 ;;; hold before anyone types one.  Keyed by the *pf-blocks* key.  Wording from
-;;; V5's *pf-rule-table*, single-type rows.  A blank PFELEVPRE draws no
-;;; elevation row (a headwall is not labelled by default).
+;;; V5's *pf-rule-table*, single-type rows.  For a headwall PFELEVPRE is the
+;;; invert prefix on PFINV1; its flowline does not get a top label row.
 (setq *pf-type-fmt*
   '(("CBI"     ("PFCONPRE" . "CONST. CURB BOX INLET") ("PFELEVPRE" . "G.L."))
     ("CBI-BOX" ("PFCONPRE" . "CONST. CURB BOX INLET") ("PFELEVPRE" . "G.L."))
@@ -637,7 +673,7 @@
     ("SMH"     ("PFCONPRE" . "CONST. SANITARY MH")    ("PFELEVPRE" . "T.R."))
     ("DMH"     ("PFCONPRE" . "CONST. DRAINAGE MH")    ("PFELEVPRE" . "T.R."))
     ("MH"      ("PFCONPRE" . "CONST. MANHOLE")        ("PFELEVPRE" . "T.R."))
-    ("HDWL"    ("PFCONPRE" . "CONST. HDWL")           ("PFELEVPRE" . ""))))
+    ("HDWL"    ("PFCONPRE" . "CONST. HDWL")           ("PFELEVPRE" . "INV."))))
 
 ;; What the drafter inputs hold before anyone has typed one -- every type;
 ;; *pf-type-fmt* overrides per type.
@@ -677,6 +713,54 @@
 (setq *pf-inv-out* "I.O.")              ; pipe LEAVES the structure
 (setq *pf-inv-in*  "I.I.")              ; pipe ARRIVES
 
+;;; ---- Invert rows (port step 4, Jake 2026-11-20) ---------------------------
+;;; Written by PFREFRESH on each profile copy, in PFINV1..5:
+;;;   a pipe attached     its own end's elevation, "I.O. 745.10 (15")"
+;;;   no pipe on a side   the structure's BOTTOM on that side (the PFDEPTH
+;;;                       grip; on the sanitary MH the left side is the
+;;;                       PFFLOORDWN corner), no size -- only where the line
+;;;                       carries on past the structure that way
+;;; A pipe belongs to the structure when its end sits at the structure's
+;;; wall -- within *pf-inv-wall-tol* of it sideways -- anywhere from the
+;;; bottom up to the rim.  Downstream is LEFT: an end on the left wall is the
+;;; outlet (I.O.), on the right wall the inlet (I.I.).  A pipe end BELOW the
+;;; bottom is reported; above it is a drop and is fine.
+;;; At a junction, another line's pipes (read on that line's own grid) go in
+;;; the middle columns; its outlet takes the I.O. column if this line has
+;;; none (V5's pfinvert).
+(setq *pf-smh-barrel-r*  2.0)           ; ft -- the sanitary MH's fixed 48" barrel, half
+(setq *pf-inv-wall-tol*  1.0)           ; ft sideways past the wall
+(setq *pf-inv-rim-tol*   0.5)           ; ft above the rim, still attached
+(setq *pf-inv-below-tol* 0.005)         ; ft below the bottom before it is reported
+;; The most downstream structure's invert column is pushed right, measured
+;; flat on the sheet (no scale): STORM from its downstream invert end,
+;; SANITARY from the grid's left edge.  V5's *pfi-first-shift*.
+(setq *pf-inv-first-shift* '(("SANITARY" GRID 2.0) ("STORM" INVERT 2.5)))
+(setq *pf-inv-first-shift-default* '(GRID 2.0))
+
+;;; ---- Plan label (Jake 2026-11-20) -----------------------------------------
+;;; The structure's name on the PLAN block: a visible attribute (PFMKPLABEL
+;;; adds it, once per block definition).  Only the plan block is filled in --
+;;; on a profile copy it stays blank and draws nothing, so no visibility
+;;; state is needed.  PFASSIGN writes it (a name typed over it is kept), sets its
+;;; height from the PFPLANHT setting, and puts a dragged label back where it
+;;; was dragged after an ATTSYNC.  Not in *pf-tags*: a block without it yet
+;;; is still assigned, and named in the run.
+(setq *pf-tag-plan-label* "PFPLABEL")
+;; Its grip to swing it around the structure (Jake, 2026-11-20): a Rotation
+;; parameter based on the block's insertion point, with a Rotate action on
+;; PFPLABEL.  The drafter's -- the tool never sets it.  PFMKPLABEL adds both.
+(setq *pf-param-plan-rot* "PFPLROT")
+
+;;; ---- Settings (Jake 2026-11-20) --------------------------------------------
+;;; Saved like the label defaults (pf-defaults: line, utility, drawing, then
+;;; these built-ins), kind "SETTING".  Numbers kept as text.
+(setq *pf-setting-kind* "SETTING")
+(setq *pf-settings*
+  '(("PFPLANHT"  . "2.4")    ; plan label text height
+    ("PFCLRMIN"  . "18")     ; minimum crossing clearance, inches
+    ("PFCLRWARN" . "6")))    ; dimension drawn when within this many inches of it
+
 ;;; ---- Top of grid ----------------------------------------------------------
 ;;; V5's probe: the highest line on this layer straight above the structure.
 ;;; Grids have stepped tops, so it is read per station.  The search stops this
@@ -703,8 +787,8 @@
 ;; they may need moving or stacking on a short pipe:
 ;;   row 1  PFLENPRE length PFLENSUF size          CONST. 45 L.F. ~ 15"
 ;;   row 2  material PFSLOPEPRE slope PFSLOPESUF   ADS N-12 HDPE @ 5.5%
-;; The four inputs are hidden + preset and SHARED: a change on any pipe goes
-;; to every pipe (pfr:sync-inputs), same as the structure's PFSTAPRE etc.
+;; The four inputs are hidden + preset, filled from the saved defaults like
+;; the structure's PFSTAPRE etc.; a value typed on one pipe stays on it.
 (setq *pf-pipe-len-pre*   "PFLENPRE")
 (setq *pf-pipe-len-suf*   "PFLENSUF")
 (setq *pf-pipe-slope-pre* "PFSLOPEPRE")
@@ -724,9 +808,17 @@
 ;; to centre -- V5's pipe label (3.20 x sf over 1.60 x sf text = 2.0).
 (setq *pf-pipe-row-gap* 2.0)
 
+;; Inside and outside diameter, inches, HIDDEN (Jake, 2026-11-20).  Filled
+;; from the pipe table (SECTION 10) when the pipe is placed and whenever its
+;; size or material changes; a value typed over is kept.  What crossings and
+;; inverts read -- the block is the source of truth.  Blank OD = wall unknown.
+(setq *pf-pipe-id*    "PFID")
+(setq *pf-pipe-od*    "PFOD")
+
 ;; Every tag the pipe block carries -- what PFGATE checks it against.
 (setq *pf-pipe-tags*
-  (append (list *pf-pipe-label* *pf-pipe-label2* *pf-pipe-size* *pf-pipe-mat*)
+  (append (list *pf-pipe-label* *pf-pipe-label2* *pf-pipe-size* *pf-pipe-mat*
+                *pf-pipe-id* *pf-pipe-od*)
           *pf-pipe-tags-fmt*))
 (setq *pf-pipe-dia*   "PFDIA")         ; inside diameter, drawn (exaggerated)
 (setq *pf-pipe-wt*    "PFWT")          ; wall, top
@@ -763,9 +855,109 @@
 ;; has to be wider than half the biggest structure.
 (setq *pf-pipe-snap* 8.0)
 
-;; Carlson's pipe libraries, under its USER folder.
-(setq *pf-lib-pipesize* "pipesize.dta")   ; size in inches = 3rd field, wall = LAST
-(setq *pf-lib-pipen*    "pipen.dta")      ; n, Material, typecode
+
+
+;;; ==========================================================================
+;;; SECTION 10  --  The pipe table (Jake, 2026-11-20)
+;;; ==========================================================================
+;;; ONE table of materials and sizes, kept WITH THE LISP so every drafter
+;;; reads the same one: pf-cfg\pf-pipes.csv.  Edit it in Excel or Notepad.
+;;; One row per material and size:
+;;;   Material   exactly what prints on the pipe label's row 2 (PFMAT)
+;;;   Utilities  which line types PFPIPE offers it for, ";" between them
+;;;              (STORM;SANITARY).  Blank = every type
+;;;   Default    Y = PFPIPE's first choice for those utilities.  One per utility
+;;;   n          Manning's n (exports later).  May be blank
+;;;   Nominal    the size picked and printed, inches (15)
+;;;   ID / OD    inside / outside diameter, inches.  Blank ID = the nominal.
+;;;              Blank OD = wall unknown: a crossing on it is UNKNOWN, never a pass
+;;; A material's Utilities, Default and n are read from its first row.
+;;; Lines starting with # are notes.  Read by pf-mats.
+(setq *pf-pipe-table* "pf-pipes.csv")
+(setq *pf-pipe-table-cols* '("MATERIAL" "UTILITIES" "DEFAULT" "N" "NOMINAL" "ID" "OD"))
+
+
+;;; ==========================================================================
+;;; SECTION 11  --  Crossings: PFXLABEL (Jake, 2026-11-20)
+;;; ==========================================================================
+;;; On the line picked in the palette (drawing-wide may come later): every
+;;; place another line's .cl crosses it.  The crossing pipe comes from that
+;;; line's own PFSUITE_PIPE blocks -- no pipe block there, nothing is drawn.
+;;; One PFSUITE_XING block per crossing, inserted at the crossing pipe's
+;;; INVERT:
+;;;   ellipse       the INSIDE of the pipe, drawn 1 ft wide x 10 tall; PFDIA
+;;;                 (linear) scales it from the insertion point
+;;;   two ticks     short level lines at the OUTSIDE diameter, moved by
+;;;                 PFODTOP / PFODBOT (linear, straight up / down from the
+;;;                 insertion point)
+;;;   station line  stretched by PFTOP (to the grid top) and PFBOT (below the
+;;;                 grid); PFSTA1 rides PFBOT -- V5's vertical station text
+;;;   label         PFLABEL / PFLABEL2 on PFLEAD (point); left of the ellipse
+;;;                 by default, PFFLIP (flip) puts it right; dragged away, it
+;;;                 goes on a leader the tool draws
+;;; Everything in the block on layer 0, colour ByBlock: the tool turns the
+;;; insert RED when the clearance is short (or unknown).
+;;; Clearance is outside to outside.  Within PFCLRWARN of PFCLRMIN (or under
+;;; it) the tool also draws a dimension from the outside of THIS line's pipe
+;;; wall, PFCLRMIN long, toward the crossing pipe, reading `18" MIN.`, and a
+;;; tick + note at that wall: `2.5" WT. (18" RCP)`.
+(setq *pf-xing-block* "PFSUITE_XING")
+(setq *pf-xing-dia*   "PFDIA")
+(setq *pf-xing-odtop* "PFODTOP")
+(setq *pf-xing-odbot* "PFODBOT")
+(setq *pf-xing-top*   "PFTOP")
+(setq *pf-xing-bot*   "PFBOT")
+(setq *pf-xing-lead*  "PFLEAD")
+(setq *pf-xing-flip*  "PFFLIP")
+;; attributes
+(setq *pf-xing-label*  "PFLABEL")     ; PROP. WATER MAIN 'A'
+(setq *pf-xing-label2* "PFLABEL2")    ; 16" C900 DR 14 PVC
+(setq *pf-xing-sta*    "PFSTA1")      ; 4+10.00 PROP. WATER CROSSING (vertical)
+(setq *pf-xing-type*   "PFTYPE")      ; XING
+(setq *pf-xing-size*   "PFSIZE")      ; the crossing pipe's, 16"
+(setq *pf-xing-mat*    "PFMAT")
+(setq *pf-xing-inv*    "PFINV")       ; its invert at this station
+(setq *pf-xing-clr*    "PFCLR")       ; the clearance measured, inches | UNKNOWN
+(setq *pf-xing-tags*
+  (list *pf-xing-label* *pf-xing-label2* *pf-xing-sta* *pf-xing-type*
+        *pf-xing-size* *pf-xing-mat* *pf-xing-inv* *pf-xing-clr*))
+(setq *pf-xing-typename* "XING")
+;; Short utility names, for lists -- the palette's crossing rows read
+;; "Crossing SAN. A  STA 1+00.00" (Jake, 2026-11-20).  A type with no row
+;; shows in full.
+(setq *pf-util-abbrev*
+  '(("SANITARY" . "SAN.") ("STORM" . "STM.") ("WATER" . "WTR.")
+    ("FORCEMAIN" . "F.M.") ("GAS" . "GAS") ("ELECTRIC" . "ELEC.")))
+;; V5's wording (pftools-cfg *pfx-label-templates* / *pfx-cross-templates*),
+;; by the CROSSING line's utility.  [name] = its line letters.  A type with no
+;; row: "PROP. <TYPE> LINE '[name]'" / "PROP. <TYPE> CROSSING".
+(setq *pf-xing-line-words*
+  '(("WATER"     . "PROP. WATER MAIN '[name]'")
+    ("SANITARY"  . "PROP. SANITARY LINE '[name]'")
+    ("STORM"     . "PROP. STORM LINE '[name]'")
+    ("FORCEMAIN" . "PROP. FORCE MAIN '[name]'")
+    ("GAS"       . "PROP. GAS LINE '[name]'")
+    ("ELECTRIC"  . "PROP. ELECTRIC LINE '[name]'")))
+(setq *pf-xing-sta-words*
+  '(("WATER"     . "PROP. WATER CROSSING")
+    ("SANITARY"  . "PROP. SANITARY CROSSING")
+    ("STORM"     . "PROP. STORM CROSSING")
+    ("FORCEMAIN" . "PROP. FORCE MAIN CROSSING")
+    ("GAS"       . "PROP. GAS CROSSING")
+    ("ELECTRIC"  . "PROP. ELECTRIC CROSSING")))
+;; Sizes in drawing units AT 1"=20', scaled with the text (HPLOT / 20).
+(setq *pf-xing-line-ext*  30.0)   ; station line below the grid's bottom (V5)
+(setq *pf-xing-label-dx*  3.2)    ; label from the station line (V5's *pfx-text-dx*)
+(setq *pf-xing-arrow-off* 1.0)    ; leader tip this far off the ellipse (Jake)
+(setq *pf-xing-tick-len*  2.0)    ; the wall ticks the tool draws
+;; Finding them: a crossing within this many feet of either line's end is a
+;; tie-in, not a crossing; one within *pf-xing-struct-tol* of a plan
+;; structure is a junction (V5's *pfx-terminus-tol* / *pfx-struct-tol*).
+(setq *pf-xing-end-tol*    2.0)
+(setq *pf-xing-struct-tol* 5.0)
+;; An existing crossing block is the same crossing when its source line
+;; matches and its target station is within this many feet.
+(setq *pf-xing-match-tol*  5.0)
 
 
 (princ "\npf-cfg loaded.")

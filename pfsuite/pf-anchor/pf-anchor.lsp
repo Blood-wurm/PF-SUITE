@@ -262,6 +262,69 @@
         (if (or (null bestd) (< d bestd)) (setq best a bestd d)))))
   (if best (cons best bestd)))
 
+;;; ---- the anchors read once: the index ---------------------------------------
+;;; (2026-11-20: the palette took a minute.)  Every "which grid is this point
+;;; in" used to search the drawing for anchors, twice -- once for the nearest
+;;; box, once for the copy check -- so a run over the pipes cost pipes x
+;;; anchors x anchors.  A loop now reads the anchors ONCE, into an index, and
+;;; asks it.  The answers are the same: same order, same nearest, same copy
+;;; rule.  An index is a snapshot -- build it where nothing writes anchors
+;;; (PFREFRESH's pipes, the palette), never across an anchor's change.
+;;;   entry: (anchor handle ins ext stamp copy-p)
+
+;; (pfg:index) -> the entries, in pfg:all's order
+(defun pfg:index ( / ed raw out)
+  (foreach a (pfg:all)
+    (setq ed  (entget a)
+          raw (cons (list a (cdr (assoc 5 ed)) (cdr (assoc 10 ed)) (pfg:extents a) (pfg:stamp a)) raw)))
+  (setq raw (reverse raw))
+  ;; pfg:copy-p's rule: its stamp is not its own handle, and ANOTHER anchor
+  ;; carries the same stamp
+  (foreach x raw
+    (setq out (cons (append x
+                            (list (and (nth 4 x)
+                                       (/= (nth 4 x) (nth 1 x))
+                                       (vl-some '(lambda (y) (and (not (eq (car y) (car x)))
+                                                                  (= (nth 4 y) (nth 4 x))))
+                                                raw)
+                                       T)))
+                    out)))
+  (reverse out))
+
+;; (pfg:ix-entry a idx) -> the anchor's entry | nil
+(defun pfg:ix-entry (a idx) (assoc a idx))
+
+;; (pfg:copy-in-p a idx) -> pfg:copy-p, from the index
+(defun pfg:copy-in-p (a idx / x)
+  (if (setq x (pfg:ix-entry a idx)) (nth 5 x) (pfg:copy-p a)))
+
+;; (pfg:nearest-in pt idx) -> pfg:nearest, from the index
+(defun pfg:nearest-in (pt idx / best bestd d)
+  (foreach x idx
+    (if (nth 2 x)
+      (progn
+        (setq d (pfg:box-dist pt (nth 2 x) (nth 3 x)))
+        (if (or (null bestd) (< d bestd)) (setq best (car x) bestd d)))))
+  (if best (cons best bestd)))
+
+;; (pfg:anchor-of-in pt idx) -> pfg:anchor-of, from the index
+(defun pfg:anchor-of-in (pt idx / hit)
+  (if (and (setq hit (pfg:nearest-in pt idx)) (not (pfg:copy-in-p (car hit) idx)))
+    (car hit)))
+
+;; (pfg:anchor-containing-in pt idx) -> pfg:anchor-containing, from the index
+(defun pfg:anchor-containing-in (pt idx / hit a ext)
+  (if (and pt
+           (setq hit (pfg:nearest-in pt idx))
+           (<= (cdr hit) 0.01)
+           (setq a (car hit))
+           (not (pfg:copy-in-p a idx))
+           (setq ext (nth 3 (pfg:ix-entry a idx)))
+           (car ext) (cadr ext)
+           (pfg:grid a))
+    a))
+
+
 ;; (pfg:at pt) -> grid | nil, saying why when nil.   pt in WORLD coordinates.
 (defun pfg:at (pt / hit g)
   (cond
@@ -286,16 +349,24 @@
 
 ;; (pfg:anchor-of pt) -> the non-copy anchor whose grid this point is in | nil
 ;;   Quiet version of pfg:at, for sorting existing objects onto grids.
-(defun pfg:anchor-of (pt / hit)
-  (if (and (setq hit (pfg:nearest pt)) (not (pfg:copy-p (car hit))))
-    (car hit)))
+;;   One call reads the anchors once (pfg:index); a loop builds the index
+;;   itself and calls pfg:anchor-of-in.
+(defun pfg:anchor-of (pt) (pfg:anchor-of-in pt (pfg:index)))
+
+;; Strict ownership for pipe ends.  Interactive grid picks may use the nearest
+;; box outside its bounds; a stored pipe must actually be inside a known box.
+;;   A loop builds the index itself and calls pfg:anchor-containing-in.
+(defun pfg:anchor-containing (pt) (pfg:anchor-containing-in pt (pfg:index)))
 
 ;; (pfg:usable) -> every usable grid in the drawing, sorted by title: not a
 ;;   copied anchor, its numbers readable, a .cl on record.  What PFSTRUCT and
 ;;   PFREFRESH work over -- neither asks for a grid pick (Jake, 2026-10-16).
-(defun pfg:usable ( / out g)
-  (foreach a (pfg:all)
-    (if (and (not (pfg:copy-p a)) (setq g (pfg:grid a)) (pfg:line-name g))
+(defun pfg:usable () (pfg:usable-in (pfg:index)))
+
+;; (pfg:usable-in idx) -> pfg:usable, from the index
+(defun pfg:usable-in (idx / out g)
+  (foreach x idx
+    (if (and (not (nth 5 x)) (setq g (pfg:grid (car x))) (pfg:line-name g))
       (setq out (cons g out))))
   (vl-sort out '(lambda (a b) (< (pfg:title a) (pfg:title b)))))
 

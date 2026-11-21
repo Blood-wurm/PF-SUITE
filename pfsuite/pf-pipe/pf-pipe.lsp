@@ -7,7 +7,8 @@
 ;;;         profile grid.  Before the first click, S = size, M = material.
 ;;;         Uses the last size / material.  Walls are left off.
 ;;;
-;;; Replaces the standalone pfpipe.lsp in the V6 folder -- do not load both.
+;;; The standalone pfpipe.lsp in the V6 folder is now PIPEPRO (ppr:, 2026-11-20),
+;;; the same block without the suite -- no shared names, safe to load both.
 ;;;   - the grid comes from the anchor you click in: its exaggeration, its
 ;;;     text height, and its pipe material as the first default.  No fixed x10.
 ;;;   - the label is written by pfp:update, which the pipe-label step will
@@ -17,16 +18,17 @@
 ;;; which structures it connects is stored: it is worked out from where the
 ;;; ends are, so a grip-stretched pipe is simply re-read.
 ;;;
-;;; Size and material are attributes on the pipe (PFSIZE, PFMAT).
+;;; Size and material are attributes on the pipe (PFSIZE, PFMAT), and so are
+;;; its inside and outside diameters (PFID, PFOD -- hidden, 2026-11-20).
 ;;;
 ;;; THE LABEL'S GRIP IS PFLEAD (2026-10-22).  Drag it out of the pipe and the
 ;;; next PFREFRESH turns the label level and draws a leader to it -- a
 ;;; polyline of the tool's, tagged with the pipe's handle.  Drag it back in
 ;;; and the label lies along the pipe again, the leader erased.
 ;;;
-;;; Reads Carlson's own libraries at run time (nothing is copied here):
-;;;   USER\pipesize.dta   size in inches = 3rd field, wall thickness = LAST
-;;;   USER\pipen.dta      n, Material, typecode
+;;; SIZES AND MATERIALS come from the pipe table kept with the lisp,
+;;; pf-cfg\pf-pipes.csv (pf-mats; Jake, 2026-11-20).  Carlson's pipesize.dta
+;;; and pipen.dta are no longer read.
 ;;; ==========================================================================
 
 (vl-load-com)
@@ -36,54 +38,25 @@
 
 
 ;;; ==========================================================================
-;;; SECTION 1  --  Carlson's pipe libraries
+;;; SECTION 1  --  The pipe table (pf-mats)
 ;;; ==========================================================================
+;;; Kept under their old names: PFSETUP's material list, PFCONVERT and the
+;;; bench call them.
 
-;; folder that holds pipesize.dta, NO trailing backslash, or nil.
-;;   usrdir$ ends in a backslash; callers add their own, so it is trimmed
-;;   here -- a doubled one made findfile miss the file.
-(defun pfp:userdir ( / hit root d)
-  (setq d (if (and (boundp 'usrdir$) (= (type usrdir$) 'STR))
-            (vl-string-right-trim "\\/" usrdir$)))
-  (cond
-    ((and d (findfile (strcat d "\\" *pf-lib-pipesize*)))
-     d)
-    (T
-     (setq root (strcat (getenv "AppData") "\\Carlson Software"))
-     ;; newest-looking folder first.  NOT (or list '()) -- or returns T.
-     (foreach y (reverse (vl-sort (vl-directory-files root "Carlson*" -1) '<))
-       (foreach r (reverse (vl-sort (vl-directory-files (strcat root "\\" y) "R*" -1) '<))
-         (setq d (strcat root "\\" y "\\" r "\\USER"))
-         (if (and (null hit) (findfile (strcat d "\\" *pf-lib-pipesize*))) (setq hit d))))
-     hit)))
-
-;; -> ((size-inches . wall-inches) ...) sorted.  Skips headers / short rows.
-;;   Older 4-field files still exist on some machines; same rule reads both.
-;;   ROUND PIPE ONLY: the first field is the shape -- 0 round, then box,
-;;   elliptical and arch rows (1 2 3) whose third field is not a diameter.
-(defun pfp:sizes ( / d out f)
-  (if (setq d (pfp:userdir))
-    (foreach l (pfl:readlines (strcat d "\\" *pf-lib-pipesize*))
-      (setq f (pfl:split l))
-      (if (and (>= (length f) 4)
-               (= 0.0 (distof (car f)))
-               (numberp (distof (nth 2 f)))
-               (numberp (distof (last f)))
-               (> (distof (nth 2 f)) 0.0))
-        (setq out (cons (cons (distof (nth 2 f)) (distof (last f))) out)))))
-  (vl-sort out '(lambda (a b) (< (car a) (car b)))))
-
-;; -> ("Concrete" "RCP III" ...)
-(defun pfp:mats ( / d out f)
-  (if (setq d (pfp:userdir))
-    (foreach l (pfl:readlines (strcat d "\\" *pf-lib-pipen*))
-      (setq f (pfl:split l))
-      (if (and (>= (length f) 2) (numberp (distof (car f))))
-        (setq out (cons (cadr f) out)))))
+;; (pfp:sizes) -> ((nominal . wall) ...) every size any material has; wall
+;;   from the first material with an OD for it, else 0.0
+(defun pfp:sizes ( / out w)
+  (foreach s (pft:sizes nil)
+    (setq w (vl-some '(lambda (m) (pft:wall m s)) (pft:materials nil))
+          out (cons (cons s (cond (w) (0.0))) out)))
   (reverse out))
 
-;; (pfp:wall size) -> wall thickness in inches | nil
-(defun pfp:wall (size) (cdr (assoc size (pfp:sizes))))
+;; (pfp:mats) -> every material name in the table
+(defun pfp:mats () (pft:materials nil))
+
+;; (pfp:wall size) -> a wall thickness for that size, inches | nil.  Size
+;;   only -- use (pfp:dims e) for a placed pipe, which knows its material.
+(defun pfp:wall (size / w) (if (> (setq w (cond ((cdr (assoc size (pfp:sizes)))) (0.0))) 0.0) w))
 
 
 ;;; ==========================================================================
@@ -214,6 +187,34 @@
   (list (/ (+ (car (car ends)) (car (cadr ends))) 2.0)
         (/ (+ (cadr (car ends)) (cadr (cadr ends))) 2.0)))
 
+;; A pipe is owned by one profile grid only when BOTH inverts are inside its
+;; anchor's box.  The nearest-grid rule is intentionally looser for mouse picks.
+;;   A loop over pipes builds one anchor index (pfg:index) and calls the -in
+;;   forms; one call builds its own (2026-11-20).
+(defun pfp:grid-of-ends (ends) (if ends (pfp:grid-of-ends-in ends (pfg:index))))
+
+(defun pfp:grid-of-ends-in (ends idx / a b)
+  (if (and ends
+           (setq a (pfg:anchor-containing-in (car ends) idx))
+           (setq b (pfg:anchor-containing-in (cadr ends) idx))
+           (eq a b))
+    (pfg:grid a)))
+
+(defun pfp:grid-issue (ends expected)
+  (pfp:grid-issue-in ends expected (if ends (pfg:index))))
+
+(defun pfp:grid-issue-in (ends expected idx / a b g)
+  (cond
+    ((null ends) "the pipe's ends cannot be read")
+    ((null (setq a (pfg:anchor-containing-in (car ends) idx)))
+     "upstream end is outside a usable profile grid")
+    ((null (setq b (pfg:anchor-containing-in (cadr ends) idx)))
+     "downstream end is outside a usable profile grid")
+    ((not (eq a b)) "the two ends are on different profile grids")
+    ((and expected (not (eq a (pfl:g 'anchor expected))))
+     "the ends do not belong to the selected profile grid")
+    ((null (setq g (pfg:grid a))) "the profile grid cannot be read")))
+
 ;; (pfp:size e) -> inches as a number | nil    PFSIZE reads like 15"
 (defun pfp:size (e / s n)
   (setq s (pfr:get e *pf-pipe-size*))
@@ -224,6 +225,47 @@
   (if (setq s (pfr:get e *pf-pipe-mat*)) s ""))
 
 (defun pfp:size-text (n) (strcat (rtos n 2 0) "\""))
+
+;; (pfp:dims-table e) -> (id od) inches from the pipe table for this pipe's
+;;   material and size | nil when the table has no such row
+(defun pfp:dims-table (e / size)
+  (if (setq size (pfp:size e)) (pft:dims (pfp:mat e) size)))
+
+;; (pfp:dims e) -> (id od) inches as THE BLOCK says them -- PFID / PFOD, which
+;;   the tool fills from the table and a drafter may type over.  id falls back
+;;   to the table, then the nominal size; od nil = wall unknown.  What inverts
+;;   and crossings read: the block is the source of truth.
+(defun pfp:dims (e / id od tb)
+  (setq id (pft:num (pfr:get e *pf-pipe-id*))
+        od (pft:num (pfr:get e *pf-pipe-od*))
+        tb (pfp:dims-table e))
+  (if (null id) (setq id (cond ((car tb)) ((pfp:size e)))))
+  (if (and (null od) (null (pfr:attr-ent e *pf-pipe-od*))) (setq od (cadr tb)))
+  (if (and od id (<= od id)) (setq od nil))
+  (if id (list id od)))
+
+;; (pfp:dims-put e) -> notes   PFID / PFOD from the table, as tool values: a
+;;   value typed over is kept (pfr:refresh).  A blank OD in the table writes
+;;   a blank PFOD -- wall unknown.
+(defun pfp:dims-put (e / tb r notes)
+  (setq tb (pfp:dims-table e))
+  (cond
+    ((null (pfr:attr-ent e *pf-pipe-id*))
+     (setq notes (list (strcat "      ** no " *pf-pipe-id* " / " *pf-pipe-od* " on this pipe -- BEDIT "
+                               *pf-pipe-block* ", add them (hidden), then ATTSYNC"))))
+    (T
+     ;; not in the table: the tool's values go blank (inside = the nominal,
+     ;; wall unknown) -- an old size's numbers must not stay behind
+     (if (null tb)
+       (setq notes (list (strcat "      ** " (pfp:mat e) " " (cond ((pfr:get e *pf-pipe-size*)) ("?"))
+                                 " is not in the pipe table -- inside diameter = the nominal size,"
+                                 " wall unknown"))))
+     (foreach p (list (cons *pf-pipe-id* (if tb (pfl:fix (car tb) 3) ""))
+                      (cons *pf-pipe-od* (if (cadr tb) (pfl:fix (cadr tb) 3) "")))
+       (setq r (pfr:refresh e (car p) (cdr p) *pf-src-rule*))
+       (if (eq r 'adopted)
+         (setq notes (cons (strcat "      " (car p) " typed over by hand -- kept") notes))))))
+  (reverse notes))
 
 
 ;;; ==========================================================================
@@ -264,7 +306,12 @@
           (pfp:ends e)
           (pfr:get e *pf-pipe-size*)
           (pfr:get e *pf-pipe-mat*)
-          inputs
+          (pfr:get e *pf-pipe-id*)
+          (pfr:get e *pf-pipe-od*)
+          (pfp:dims-table e)                ; an edit to the table is a change
+          (if inputs inputs
+            (pfv:fp-inputs e (pfg:line-name g) "PIPE" ""
+                           *pf-pipe-tags-fmt* *pf-pipe-fmt-defaults*))
           (mapcar '(lambda (k) (pfl:g k g)) '(leftx basey sta0 datum vscale hplot))
           (pfl:dynprop-get (vlax-ename->vla-object e) *pf-pipe-dia*)
           (mapcar '(lambda (tg) (list (pfr:get e tg) (pfr:att-pt e tg)))
@@ -298,21 +345,15 @@
 ;;   the top row; the bend is a landing's length further from the text.  The
 ;;   first segment tapers from nothing at the tip to the arrow's width: that
 ;;   is the arrowhead, pointing along the leg.
-(defun pfp:leader-verts (e top right mid up dia walls sf / obj dir tip land bend back)
+(defun pfp:leader-verts (e top right mid up dia walls sf / obj tip)
   (setq obj  (vlax-ename->vla-object e)
-        dir  (if right -1.0 1.0)            ; from the text toward the arrow
         tip  (if up
                (list (car mid) (+ (cadr mid) dia
                                   (if walls (cond ((pfl:dynprop-get obj *pf-pipe-wt*)) (0.0)) 0.0)))
                (list (car mid) (- (cadr mid)
-                                  (if walls (cond ((pfl:dynprop-get obj *pf-pipe-wb*)) (0.0)) 0.0))))
-        land (list (+ (car top) (* dir sf *pf-pipe-land-gap*)) (cadr top))
-        bend (list (+ (car land) (* dir sf *pf-pipe-land-len*)) (cadr land))
-        back (polar tip (angle tip bend) (* sf *pf-pipe-arrow-len*)))
-  (list (list tip  0.0 (* sf *pf-pipe-arrow-wid*))
-        (list back 0.0 0.0)
-        (list bend 0.0 0.0)
-        (list land 0.0 0.0)))
+                                  (if walls (cond ((pfl:dynprop-get obj *pf-pipe-wb*)) (0.0)) 0.0)))))
+  ;; the shape is shared with the crossing label (pf-lib)
+  (pfl:leader-path tip top right sf))
 
 ;; (pfp:leader-put e verts) -> (note ...)   this pipe's leaders erased, and a
 ;;   new one drawn when verts is given
@@ -334,8 +375,12 @@
 ;;   inputs: from pfp:sync.
 (defun pfp:update (e g inputs / obj lead moved ends ref p1 p2 e1 e2 run size mat vs dia
                      wall rows r slope ht sf ang cen nrm half lab out right walls
-                     rot just top bot notes w)
+                     rot just top bot notes w default-run dims)
   (setq *pfd-stage* "reading the pipe")
+  (setq default-run (null inputs))
+  (if (null inputs)
+    (setq inputs (pfv:inputs e (pfg:line-name g) "PIPE" ""
+                             *pf-pipe-tags-fmt* *pf-pipe-fmt-defaults*)))
   (setq obj    (vlax-ename->vla-object e)
         ends   (pfp:ends e)
         ;; the reference the label grip is measured against: the midpoint of
@@ -353,21 +398,28 @@
     ((null ends) (list "?" "      ** can't read this pipe's ends (PFRUN missing?)"))
     ((null size) (list "?" "      ** PFSIZE is blank or not a number -- type one in Properties"))
     (T
-     (setq p1  (car ends) p2 (cadr ends)
+     ;; PFID / PFOD from the table first (a typed value is kept), then the
+     ;; drawing follows the block's own numbers
+     (setq *pfd-stage* "inside and outside diameter")
+     (setq notes (append (reverse (pfp:dims-put e)) notes))
+     (setq dims (pfp:dims e)
+           p1  (car ends) p2 (cadr ends)
            e1  (pfl:y->elev (cadr p1) g)
            e2  (pfl:y->elev (cadr p2) g)
            run (abs (- (car p2) (car p1)))
-           dia (* (/ size 12.0) vs))
+           dia (* (/ (car dims) 12.0) vs))
 
-     ;; the drawn diameter follows PFSIZE; walls too, when the library has them
+     ;; the drawn diameter is the INSIDE diameter; the walls, when the OD is known
      (setq *pfd-stage* "setting the diameter and walls")
      (if (> (abs (- dia (cond ((pfl:dynprop-get obj *pf-pipe-dia*)) (0.0)))) 1e-4)
        (if (/= T (setq r (pfd:dynprop-put obj *pf-pipe-dia* dia)))
          (setq notes (cons (strcat "      diameter: " r) notes))))
-     (if (and (setq wall (pfp:wall size)) (> wall 0.0))   ; 0 = library has none
-       (foreach prm (list *pf-pipe-wt* *pf-pipe-wb*)
-         (if (> (abs (- (* (/ wall 12.0) vs) (cond ((pfl:dynprop-get obj prm)) (0.0)))) 1e-4)
-           (pfd:dynprop-put obj prm (* (/ wall 12.0) vs)))))
+     (if (cadr dims)
+       (progn
+         (setq wall (/ (- (cadr dims) (car dims)) 2.0))
+         (foreach prm (list *pf-pipe-wt* *pf-pipe-wb*)
+           (if (> (abs (- (* (/ wall 12.0) vs) (cond ((pfl:dynprop-get obj prm)) (0.0)))) 1e-4)
+             (pfd:dynprop-put obj prm (* (/ wall 12.0) vs))))))
 
      (if (< run 1e-6)
        (setq rows (cons "" "") notes (cons "      ** both ends at the same station" notes))
@@ -455,112 +507,91 @@
                                  " grip out of the pipe, then PFREFRESH puts it on a leader")
                          notes)))
      (pfr:schema-put e)
-     (pfr:stamp-put e (pfp:fp e g inputs))          ; what PFREFRESH compares
+     (pfr:stamp-put e (pfp:fp e g (if default-run nil inputs)))
      (cons (strcat (car rows) "  /  " (cdr rows)) (reverse notes)))))
 
 
 ;;; ==========================================================================
-;;; SECTION 4  --  For the invert-label step (NOT CALLED YET)
+;;; SECTION 4  --  PFPIPE
 ;;; ==========================================================================
-;;; Moved here from the old PFDRAW, which drew inverts until 2026-10-15 when
-;;; placing structures became structures-only.  Kept for the invert/pipe-label
-;;; step (workflow step 4).  ctx is pf-struct's run context plus a 'pipes key:
-;;;   ((ename anchor p1 p2 up-copy down-copy) ...)
-;;; An unexplained "consp nil" was hit in the old invert step and never found.
-;;; V5's rules to port then are in its pfinvert.lsp and pftools-cfg.lsp
-;;; (fan drop 4.0 x text height, column gap 2.0 x, first-structure shift).
+;;; The invert rows that used to wait here (pfp:end-at, pfp:inverts ...)
+;;; became pf-invert (2026-11-20).
 
-;; (pfp:end-at pt anchor copies) -> the copy this pipe end sits at | nil
-(defun pfp:end-at (pt anchor copies / best bd d)
-  (foreach c copies
-    (if (and anchor (eq (nth 3 c) anchor))
-      (progn
-        (setq d (abs (- (car pt) (nth 4 c))))
-        (if (and (<= d *pf-pipe-snap*) (or (null bd) (< d bd)))
-          (setq best (car c) bd d)))))
-  best)
-
-;; (pfp:end-elev pipe which ctx) -> elevation of the 'up or 'down end | nil
-(defun pfp:end-elev (pipe which ctx / g)
-  (if (setq g (cdr (assoc (nth 1 pipe) (pfs:ctx 'grids ctx))))
-    (pfl:y->elev (cadr (if (eq which 'up) (nth 2 pipe) (nth 3 pipe))) g)))
-
-;; (pfp:inverts copy ctx) -> ((prefix elev size) ...) at this copy, I.O. first
-(defun pfp:inverts (copy ctx / outs ins z)
-  (foreach p (pfs:ctx 'pipes ctx)
-    (if (and (eq (nth 4 p) copy) (setq z (pfp:end-elev p 'up ctx)))
-      (setq outs (cons (list *pf-inv-out* z (pfp:size (car p))) outs)))
-    (if (and (eq (nth 5 p) copy) (setq z (pfp:end-elev p 'down ctx)))
-      (setq ins (cons (list *pf-inv-in* z (pfp:size (car p))) ins))))
-  (append (reverse outs) (reverse ins)))
-
-;; (pfp:lowest plan ctx) -> the lowest invert at this STRUCTURE, across every
-;;   line it is on | nil
-(defun pfp:lowest (plan ctx / low z)
-  (foreach c (pfs:ctx 'copies ctx)
-    (if (= (nth 1 c) plan)
-      (foreach r (pfp:inverts (car c) ctx)
-        (setq z (cadr r))
-        (if (or (null low) (< z low)) (setq low z)))))
-  low)
+;; The utility of the grid last clicked in, for the material list
+(if (not (boundp '*pfp-util*)) (setq *pfp-util* nil))
 
 ;; (pfp:inv-row prefix elev size) -> "I.O. 765.43 (15\")"   V5's format
 (defun pfp:inv-row (prefix elev size)
   (strcat prefix " " (pfl:fix elev 2)
           (if size (strcat " (" (rtos size 2 0) "\")") "")))
 
+;; (pfp:first-mat g) -> the material a new pipe in grid g starts with: the
+;;   table's Default for the grid's utility, else the material PFSETUP
+;;   recorded on the grid (if the table has it), else the first offered
+(defun pfp:first-mat (g / u)
+  (setq u (pfl:g 'util g))
+  (cond ((pft:default u))
+        ((and (pfl:g 'material g) (pft:mat (pfl:g 'material g))) (car (pft:mat (pfl:g 'material g))))
+        ((car (pft:materials u)))))
 
-;;; ==========================================================================
-;;; SECTION 5  --  PFPIPE
-;;; ==========================================================================
-
+;; (pfp:pick-size) -> nil   the size, from the current material's sizes
 (defun pfp:pick-size ( / sizes s)
-  (setq sizes (pfp:sizes))
+  (setq sizes (pft:sizes (if (pft:mat *pfp-mat*) *pfp-mat*)))
   (cond
-    ((null sizes) (pfl:say "No sizes found in Carlson's pipesize.dta."))
+    ((null sizes) (pfl:say (strcat "No sizes in the pipe table (" (cond ((pft:path)) ("pf-pipes.csv")) ").")))
     (T
-     (pfl:say (strcat "Sizes (in): "
-                      (apply 'strcat (mapcar '(lambda (x) (strcat (rtos (car x) 2 0) "  ")) sizes))))
-     (setq s (getreal (strcat "\nInside diameter, inches <"
+     (pfl:say (strcat "Sizes (in)" (if (pft:mat *pfp-mat*) (strcat " for " *pfp-mat*) "") ": "
+                      (pfl:join (mapcar '(lambda (x) (rtos x 2 0)) sizes))))
+     (setq s (getreal (strcat "\nNominal size, inches <"
                               (if *pfp-size* (rtos *pfp-size* 2 0) "none") ">: ")))
      (cond
        ((null s))
-       ((assoc s sizes) (setq *pfp-size* s))
-       (T (pfl:say "That size is not in the library.  Add it in Carlson first."))))))
+       ((member s sizes) (setq *pfp-size* s))
+       (T (pfl:say "That size is not in the pipe table for this material -- add a row to pf-pipes.csv first."))))))
 
+;; (pfp:pick-mat) -> nil   the material, from those offered for the grid's utility
 (defun pfp:pick-mat ( / mats i n)
-  (setq mats (pfp:mats))
+  (setq mats (pft:materials *pfp-util*))
   (cond
-    ((null mats) (pfl:say "No materials found in Carlson's pipen.dta."))
+    ((null mats) (pfl:say "No materials in the pipe table for this line type."))
     (T
      (setq i 0)
      (foreach m mats (setq i (1+ i)) (pfl:say (strcat "  " (itoa i) "  " m)))
      (setq n (getint (strcat "\nMaterial number <" (cond (*pfp-mat*) ("none")) ">: ")))
-     (if (and n (<= 1 n (length mats))) (setq *pfp-mat* (nth (1- n) mats))))))
+     (if (and n (<= 1 n (length mats)))
+       (progn
+         (setq *pfp-mat* (nth (1- n) mats))
+         (if (and *pfp-size* (not (member *pfp-size* (pft:sizes *pfp-mat*))))
+           (pfl:say (strcat "  " (rtos *pfp-size* 2 0) "\" isn't listed for " *pfp-mat*
+                            " -- pick a size (S)."))))))))
 
 ;; (pfp:place p1 p2 g size mat others) -> (pipe label-text note ...) |
 ;;   explanation string.  The work of PFPIPE, no questions -- what PFSELFTEST
 ;;   drives (2026-10-30).  p1 p2: WORLD upstream and downstream inverts, in
 ;;   grid g.  size: inches.  mat: text.  others: the pipes whose label inputs
 ;;   this one shares -- T = every pipe in the drawing (the command).
-(defun pfp:place (p1 p2 g size mat others / e obj sy)
+(defun pfp:place (p1 p2 g size mat others / e obj sy issue)
   (setq *pfd-stage* "inserting the pipe")
   (cond
+    ((setq issue (pfp:grid-issue (list p1 p2) g))
+     (strcat "pipe not placed: " issue))
     ((null (setq e (pfd:insert *pf-pipe-block* p1))) "AutoCAD would not insert the block")
     (T
      (setq obj (vlax-ename->vla-object e))
      (pfr:put e *pf-pipe-size* (pfp:size-text size))
      (pfr:put e *pf-pipe-mat*  (cond (mat) ("")))
+     ;; PFID / PFOD: filled from the table by pfp:update (pfp:dims-put)
      (pfr:schema-put e)
      ;; the run, then visibility; size and label in pfp:update
      (pfd:dynprop-put obj *pf-pipe-run-x* (- (car p2) (car p1)))
      (pfd:dynprop-put obj *pf-pipe-run-y* (- (cadr p2) (cadr p1)))
      (pfd:dynprop-put obj *pf-pipe-vis* *pf-pipe-state-plain*)
-     ;; the shared label inputs: this pipe gets what every pipe holds, and a
-     ;; change typed on any pipe goes to all
-     (setq *pfd-stage* "sharing the label inputs")
-     (setq sy (pfp:sync-in (if (eq others T) (pfp:all) (cons e others))))
-     (foreach s (cdr sy) (pfl:say s))
+     ;; Production uses drawing defaults and this block's own hand edits.
+     ;; An explicit test scope retains the legacy input path.
+     (if (not (eq others T))
+       (progn
+         (setq sy (pfp:sync-in (cons e others)))
+         (foreach s (cdr sy) (pfl:say s))))
      (cons e (pfp:update e g (car sy))))))
 
 ;; (pfp:main) -> nil   the command body, run inside pfd:run: the clicks,
@@ -570,8 +601,11 @@
     ((= 1 (getvar "BLOCKEDITOR")) (pfl:say "PFPIPE: close the Block Editor first."))
     ((null (tblsearch "BLOCK" *pf-pipe-block*))
      (pfl:say (strcat "PFPIPE: no " *pf-pipe-block* " block in this drawing.  Insert one once, then erase it.")))
-    ((null (pfp:sizes)) (pfl:say "PFPIPE: can't read Carlson's pipesize.dta."))
+    ((null (pft:sizes nil))
+     (pfl:say (strcat "PFPIPE: the pipe table has no sizes -- " (car (pft:notes)))))
     (T
+     (foreach s (pft:notes) (pfl:say (strcat "  ** " s)))
+     (foreach s (pft:default-notes) (pfl:say (strcat "  ** " s)))
      (if (null *pfp-size*) (pfp:pick-size))
      (if *pfp-size*
        (progn
@@ -589,11 +623,15 @@
            ((null p1u))
            ((null (setq g (pfg:at (setq p1 (trans p1u 1 0))))))
            ((null (setq p2u (getpoint p1u "\nDownstream invert: "))))
-           ((< (abs (- (car (setq p2 (trans p2u 1 0))) (car p1))) 1e-6)
+            ((< (abs (- (car (setq p2 (trans p2u 1 0))) (car p1))) 1e-6)
             (pfl:say "PFPIPE: both inverts are at the same station."))
+            ((setq res (pfp:grid-issue (list p1 p2) g))
+             (pfl:say (strcat "PFPIPE: " res ".")))
            (T
-            ;; first material default: the one PFSETUP recorded on the grid
-            (if (null *pfp-mat*) (setq *pfp-mat* (cond ((pfl:g 'material g)) ((car (pfp:mats))))))
+            ;; first material: the table's Default for this line type, else
+            ;; the one PFSETUP recorded on the grid (pfp:first-mat)
+            (setq *pfp-util* (pfl:g 'util g))
+            (if (null *pfp-mat*) (setq *pfp-mat* (pfp:first-mat g)))
             (setq res (pfp:place p1 p2 g *pfp-size* *pfp-mat* T))
             (if (= (type res) 'STR)
               (pfl:say (strcat "PFPIPE: " res "."))

@@ -261,20 +261,47 @@
     (pfm:refine cl pt w)
     w))
 
-;; (pfm:face cl sta rng rot) -> (code margin) | string explaining why not
-(defun pfm:face (cl sta rng rot / s-in s-out p-in p-0 p-out pair)
-  (setq s-in  (max (car rng)  (- sta *pf-face-probe*))
-        s-out (min (cadr rng) (+ sta *pf-face-probe*)))
+;; (pfm:face-word f) -> "back" / "front" / "side"
+(defun pfm:face-word (f)
+  (cond ((= f "B") "back") ((= f "F") "front") (T "side")))
+
+;; (pfm:face cl sta rng rot) -> (code margin through note) | string saying why not
+;;   One line's face at one structure (Jake, 2026-11-20).  The first letter is
+;;   the side toward the LOWER station -- downstream, where the flow leaves --
+;;   and the flow always leaves through the BACK (*pf-face-out*).  So only the
+;;   upstream side is read:
+;;     line on both sides   the downstream side is CHECKED: not the back ->
+;;                          a string (turned wrong in plan); the face is not
+;;                          written
+;;     outlet end           nothing downstream: the back is taken as said
+;;     top of the line      nothing upstream: straight through, the face
+;;                          opposite the back (*pf-face-opposite*)
+;;   through = T when the line runs on both sides (a junction's through-line).
+;;   margin: degrees from a 45-degree corner of the sides read (90 when none).
+(defun pfm:face (cl sta rng rot / s-lo s-hi lo hi p-lo p-0 p-hi lo-f hi-f ms)
+  (setq s-lo (max (car rng)  (- sta *pf-face-probe*))
+        s-hi (min (cadr rng) (+ sta *pf-face-probe*))
+        lo   (> (- sta s-lo) *pf-range-eps*)
+        hi   (> (- s-hi sta) *pf-range-eps*))
   (cond
-    ((or (>= s-in sta) (<= s-out sta))
-     "at the very end of the line -- no line on one side to read a face from")
-    ((not (and (setq p-in  (pfc:cl-point cl s-in))
-               (setq p-0   (pfc:cl-point cl sta))
-               (setq p-out (pfc:cl-point cl s-out))))
+    ((not (or lo hi)) "the line is too short here to read a face from")
+    ((not (and (setq p-0 (pfc:cl-point cl sta))
+               (or (not lo) (setq p-lo (pfc:cl-point cl s-lo)))
+               (or (not hi) (setq p-hi (pfc:cl-point cl s-hi)))))
      "centerline would not return points near this station")
     (T
-      (setq pair (pfl:face-pair (angle p-in p-0) (angle p-0 p-out) rot))
-      (list (car pair) (cdr pair)))))
+     (if lo (setq lo-f (pfl:face-of (angle p-0 p-lo) rot)))
+     (if hi (setq hi-f (pfl:face-of (angle p-0 p-hi) rot)))
+     (setq ms (mapcar 'cdr (vl-remove nil (list lo-f hi-f))))
+     (if (and lo-f (/= (car lo-f) *pf-face-out*))
+       (strcat "the line leaves through its " (pfm:face-word (car lo-f))
+               ", not its back -- turned wrong in plan?  Face not written")
+       (list (strcat *pf-face-out*
+                     (if hi-f (car hi-f) (cdr (assoc *pf-face-out* *pf-face-opposite*))))
+             (if ms (apply 'min ms) 90.0)
+             (and lo hi)
+             (cond ((not hi) "top of the line -- nothing upstream, straight through taken")
+                   (T "")))))))
 
 ;; (pfm:plan-fp e) -> fingerprint of where an alpha block sits and what lines
 ;;   it is on.  PFASSIGN stamps it; a different answer later = moved or turned
@@ -558,31 +585,47 @@
   (vl-some '(lambda (l) (if (= (pfl:g 'lname l) lname) l)) lines))
 
 ;; (pfm:memb-same-p a b) -> T when two MEMB lists hold the same lines at the
-;;   same stations and offsets, to the thousandth
+;;   same stations and offsets, to the thousandth, with the same faces.  A
+;;   MEMB from before faces were kept per line (no 4th item) is not the same
+;;   as one with them, so PFASSIGN fills them in once.
 (defun pfm:memb-same-p (a b)
   (and (= (length a) (length b))
        (vl-every '(lambda (m / o)
                     (and (setq o (assoc (car m) b))
                          (equal (cadr m) (cadr o) 0.001)
-                         (equal (caddr m) (caddr o) 0.001)))
+                         (equal (caddr m) (caddr o) 0.001)
+                         (equal (nth 3 m) (nth 3 o))))
                  a)))
 
-;; (pfm:face-of hits lines rot) -> (code margin) | string saying why not
-;;   PFFACE is one value per structure, read off its THROUGH-line: the one
-;;   that runs on both sides of it (pf-cfg).  Every other line starts or ends
-;;   there.  None, or two, is said -- not guessed.
-(defun pfm:face-of (hits lines rot / l f got why)
+;; (pfm:face-of hits lines rot) -> (faces . plan-face)
+;;   faces: ((lname . (code margin through note)) | (lname . "why not") ...)
+;;          one per line -- each profile copy shows its own line's (Jake,
+;;          2026-11-20)
+;;   plan-face: what the plan block's PFFACE holds -- the through-line's face
+;;          (the line running on both sides of it), else the only line's;
+;;          (code margin through note), or a string when there is no single
+;;          answer.
+(defun pfm:face-of (hits lines rot / l f faces ok thru)
   (foreach h hits
-    (setq l (pfm:line-entry (car h) lines)
-          f (pfm:face (pfl:g 'cl l) (cadr h) (pfl:g 'rng l) rot))
-    (if (= (type f) 'STR)
-      (setq why f)
-      (setq got (cons (cons (car h) f) got))))
-  (cond
-    ((null got) why)
-    ((cdr got) (strcat "two lines run through it (" (car (cadr got)) ", " (car (car got))
-                       ") -- set PFFACE by hand"))
-    (T (cdr (car got)))))
+    (setq l     (pfm:line-entry (car h) lines)
+          f     (pfm:face (pfl:g 'cl l) (cadr h) (pfl:g 'rng l) rot)
+          faces (cons (cons (car h) f) faces)))
+  (setq faces (reverse faces)
+        ok    (vl-remove-if '(lambda (p) (= (type (cdr p)) 'STR)) faces)
+        thru  (vl-remove-if-not '(lambda (p) (caddr (cdr p))) ok))
+  (cons faces
+        (cond
+          ((= 1 (length thru)) (cdr (car thru)))
+          (thru (strcat "two lines run through it (" (pfl:join-with ", " (mapcar 'car thru))
+                        ") -- each copy shows its own line's face"))
+          ((= 1 (length faces)) (cdr (car faces)))
+          ((= 1 (length ok)) (cdr (car ok)))
+          (ok (strcat "no line runs through it -- each copy shows its own line's face"))
+          ((cdr (car faces))))))
+
+;; (pfm:memb-face m) -> the face kept on a MEMB entry | nil
+(defun pfm:memb-face (m / f)
+  (if (and (setq f (nth 3 m)) (= (type f) 'STR) (/= f "")) f))
 
 ;; (pfm:assign e hits lines) -> (status . lines-to-report)
 ;;   status 'new, 'updated, 'same, 'off (on no line) or 'skip.
@@ -590,7 +633,7 @@
 ;;   PFTYPE, PFSIZE off a sized name), MEMB -- every line it is on, lines it
 ;;   has left dropped -- and its face.  Anything a drafter typed is kept
 ;;   (pfr:refresh).  Rims are pfm:rim-put's.
-(defun pfm:assign (e hits lines / nm row rot old memb status face r1 gone out)
+(defun pfm:assign (e hits lines / nm row rot old memb status face faces r1 gone out matrix bad)
   (setq nm  (pfl:effname e)
         row (pfr:row-for nm))
   (cond
@@ -598,12 +641,16 @@
     ((not (pfr:tags-ok-p e))
      (list 'skip (strcat "  ** " (pfm:who e) "  " nm " is missing attributes -- ATTSYNC it")))
     (T
-     (setq rot  (cond ((cdr (assoc 50 (entget e)))) (0.0))
-           old  (pfr:memb-get e)
-           memb (mapcar '(lambda (h) (list (car h) (cadr h) (caddr h))) hits))
+     (setq rot    (cond ((cdr (assoc 50 (entget e)))) (0.0))
+           old    (pfr:memb-get e)
+           matrix (eq (caddr row) '*pf-states-face*)
+           memb   (mapcar '(lambda (h) (list (car h) (cadr h) (caddr h))) hits))
      (cond
-       ;; not moved, turned or put on another line since the last stamp
-       ((and (pfm:memb-same-p old memb) (= (pfr:stamp-get e) (pfm:plan-fp e)))
+       ;; not moved, turned or put on another line since the last stamp --
+       ;; and, on a block with faces, its faces already kept per line
+       ((and (pfm:memb-same-p (mapcar '(lambda (m) (list (car m) (cadr m) (caddr m))) old) memb)
+             (or (not matrix) (vl-every '(lambda (m) (= 4 (length m))) old))
+             (= (pfr:stamp-get e) (pfm:plan-fp e)))
         (list 'same))
        ((null memb)
         (pfr:memb-put e nil)
@@ -622,42 +669,115 @@
         (pfr:put e *pf-tag-type* (vl-symbol-name (car row)))
         (if (/= "" (pfr:size-of nm))
           (pfr:put e *pf-tag-size* (pfr:size-of nm)))
-        (pfr:memb-put e memb)
-        ;; face -- only blocks that carry the matrix
-        (if (eq (caddr row) '*pf-states-face*)
+        ;; faces -- only blocks that carry the matrix: one per line, kept on
+        ;; its MEMB entry (a line whose face can't be read keeps the face it
+        ;; had, or none); the plan block's PFFACE from the through-line
+        (if matrix
           (progn
-            (setq face (pfm:face-of hits lines rot))
+            (setq faces (pfm:face-of hits lines rot)
+                  memb  (mapcar '(lambda (m / f o)
+                                   (setq f (cdr (assoc (car m) (car faces)))
+                                         o (assoc (car m) old))
+                                   (append m (list (cond ((and f (/= (type f) 'STR)) (car f))
+                                                         ((and o (pfm:memb-face o)))
+                                                         ("")))))
+                                memb)
+                  face  (cdr faces))
+            (foreach p (car faces)
+              (cond
+                ((= (type (cdr p)) 'STR)
+                 (setq bad (cons (strcat "      face on " (car p) ": " (cdr p)) bad)))
+                ((/= "" (cadddr (cdr p)))
+                 (setq bad (cons (strcat "      face on " (car p) ": " (cadddr (cdr p))) bad)))
+                ((< (cadr (cdr p)) *pf-face-warn*)
+                 (setq bad (cons (strcat "      face on " (car p) ": " (car (cdr p)) ", only "
+                                         (pfl:fix (cadr (cdr p)) 1) " deg from a corner -- CHECK IT")
+                                 bad)))))
             (if (= (type face) 'STR)
               (setq r1 face)
-              (progn
-                (setq r1 (pfr:refresh e *pf-tag-face* (car face) *pf-src-rule*))
-                (if (and (= r1 'written) (< (cadr face) *pf-face-warn*))
-                  (setq r1 (strcat "written, but only " (pfl:fix (cadr face) 1)
-                                   " deg from a corner -- CHECK IT")))))))
+              (setq r1 (pfr:refresh e *pf-tag-face* (car face) *pf-src-rule*)))))
+        (pfr:memb-put e memb)
         (pfr:schema-put e)
         (pfr:stamp-put e (pfm:plan-fp e))
         (setq out (list (strcat "  " (pfm:who e) "  "
-                                (pfl:join-with "  " (mapcar '(lambda (m) (strcat (car m) " " (pfl:fmt-sta (cadr m))))
+                                (pfl:join-with "  " (mapcar '(lambda (m) (strcat (car m) " " (pfl:fmt-sta (cadr m))
+                                                                                 (if (pfm:memb-face m)
+                                                                                   (strcat " (" (pfm:memb-face m) ")")
+                                                                                   "")))
                                                             memb))
-                                (if (/= "" (cond ((pfr:get e *pf-tag-face*)) ("")))
-                                  (strcat "   face " (pfr:get e *pf-tag-face*))
-                                  "")
                                 (if (eq status 'new) "" "   (updated)"))))
         (if gone
           (setq out (append out (list (strcat "      left " (pfl:join-with ", " (mapcar 'car gone))
                                               " -- PFREFRESH erases its copies there")))))
-        (if (= (type r1) 'STR) (setq out (append out (list (strcat "      face: " r1)))))
+        (if bad (setq out (append out (reverse bad))))
+        (if (= (type r1) 'STR) (setq out (append out (list (strcat "      PFFACE: " r1)))))
         (if (= r1 'kept)       (setq out (append out (list "      face: set by hand -- kept"))))
         (if (= r1 'adopted)    (setq out (append out (list "      face: changed by hand since last run -- now kept"))))
         (cons status out))))))
 
-;; (pfm:rim-put e) -> 'written | 'kept | 'adopted | 'outside | nil
+;; (pfm:plan-label-ht e) -> the plan label's text height for this structure:
+;;   the PFPLANHT setting of its first line (pf-defaults), else built in
+(defun pfm:plan-label-ht (e)
+  (cond ((pft:num (pfv:effective (car (car (pfr:memb-get e))) *pf-setting-kind* ""
+                                 "PFPLANHT" (cdr (assoc "PFPLANHT" *pf-settings*)))))
+        ((pft:num (cdr (assoc "PFPLANHT" *pf-settings*))))))
+
+;; (pfm:plan-label e) -> 'none (the block has no PFPLABEL yet) | a list of
+;;   what happened: 'written 'kept 'height 'restored
+;;   The structure's name on the PLAN block (Jake, 2026-11-20): the text is
+;;   PFNAME, as a tool value (typed over is kept); the height is the setting;
+;;   the drafter drags it where it reads best.  ATTSYNC sends an attribute
+;;   back to where the block definition has it -- a label found exactly there
+;;   after the drafter had put it elsewhere is put back where they put it.
+(defun pfm:plan-label (e / tag a want cur src ht r out now def ins pos rode)
+  (setq tag *pf-tag-plan-label*)
+  (cond
+    ((null (setq a (pfr:attr-ent e tag))) 'none)
+    (T
+     ;; the text -- written only when it isn't already right
+     (setq want (cond ((pfr:get e *pf-tag-name*)) (""))
+           cur  (cond ((pfr:get e tag)) (""))
+           src  (pfr:src-entry e tag))
+     (if (not (and (= cur want) src (= (cadr src) *pf-src-rule*) (= (caddr src) want)))
+       (progn
+         (setq r (pfr:refresh e tag want *pf-src-rule*))
+         (cond ((eq r 'written) (setq out (cons 'written out)))
+               ((member r '(kept adopted)) (setq out (cons 'kept out))))))
+     ;; the height
+     (setq ht (pfm:plan-label-ht e) a (pfr:attr-ent e tag))
+     (if (and ht (not (equal ht (cdr (assoc 40 (entget a))) 1e-6)))
+       (progn
+         (entmod (subst (cons 40 ht) (assoc 40 (entget a)) (entget a)))
+         (entupd e)
+         (setq out (cons 'height out))))
+     ;; where it sits: put back after an ATTSYNC, else remembered
+     (setq now (pfr:att-pt e tag)
+           def (pfr:default-pt e tag)
+           ins (pfl:ins e)
+           pos (cdr (assoc (strcase tag) (pfr:pos-all e))))
+     (if (and pos (cddr pos))
+       (setq rode (list (+ (car pos) (- (car ins) (caddr pos)))
+                        (+ (cadr pos) (- (cadr ins) (cadddr pos))))))
+     (cond
+       ((and now def rode (< (distance now def) 0.01) (> (distance rode def) 0.01))
+        (pfr:att-move e tag rode)
+        (setq out (cons 'restored out)))
+       ((and now (or (null rode) (> (distance now rode) 0.01)))
+        (pfr:pos-put e tag now ins)))
+     out)))
+
+;; (pfm:headwall-p e) -> T for a suite headwall, not a legacy count-only block.
+(defun pfm:headwall-p (e)
+  (eq (car (pfr:row-for (pfl:effname e))) 'HDWL))
+
+;; (pfm:rim-put e) -> 'written | 'kept | 'adopted | 'outside | 'headwall | nil
 ;;   The rim off the TIN loaded now.  A rim typed by hand is kept -- also one
 ;;   typed before the tool ever wrote a rim (no record yet: it is marked as
 ;;   typed rather than overwritten).  Outside the surface nothing is written.
 (defun pfm:rim-put (e / z cur)
   (setq cur (pfr:get e *pf-tag-rim*))
   (cond
+    ((pfm:headwall-p e) 'headwall)  ; flowline at basepoint, never a TIN surface elevation
     ((null (setq z (pfc:tin-z (cdr (assoc 10 (entget e)))))) 'outside)
     ((and (null (pfr:src-entry e *pf-tag-rim*)) (pfl:number-p cur))
      (pfr:assert e *pf-tag-rim* cur)

@@ -33,6 +33,8 @@
 ;;;             station order with its built name.  Reads only.
 ;;;   PFSELFTEST the test sheet's checks run by code: makes its own test
 ;;;             blocks, drives the real suite code, PASS / FAIL, erases them.
+;;;   PFTESTNET / PFTESTEDIT  draw the Pro-Flow importer's test network on
+;;;             the STORM_FB system, then make its six edits (section 12).
 ;;;
 ;;; Between them they cover the only boundary in this project that nothing
 ;;; else checks: the same strings live in the Block Editor and in pf-cfg.lsp,
@@ -294,6 +296,8 @@
 ;;;             rotation, lock) one row below it -- the label's second row
 ;;;   PFLENPRE PFLENSUF PFSLOPEPRE PFSLOPESUF  hidden + preset, defaults
 ;;;             filled from *pf-pipe-fmt-defaults*
+;;;   PFID PFOD hidden + preset, blank -- inside / outside diameter, filled
+;;;             by the tool from the pipe table (2026-11-20)
 ;;; Then BSAVE, SAVE the drawing, and redefine PFSUITE_PIPE where it is used.
 ;;; Pipes placed before need ATTSYNC to get the new attributes (ATTSYNC was
 ;;; tested safe on the pipe, 2026-10-15).
@@ -359,11 +363,146 @@
          (if (entmakex (pfb:attdef-like ld (car pair) (cdr pair) 9 (* i dx) (* i dy)))
            (setq made (1+ made))))
        (setq i (1+ i)))
+     ;; inside / outside diameter (2026-11-20) -- hidden + preset, blank:
+     ;; the tool fills them from the pipe table
+     (foreach tag (list *pf-pipe-id* *pf-pipe-od*)
+       (if (pfb:find-attdef tag)
+         (setq have (cons tag have))
+         (if (entmakex (pfb:attdef-like ld tag "" 9 (* i dx) (* i dy)))
+           (setq made (1+ made))))
+       (setq i (1+ i)))
 
      (pfl:say (strcat "PFMKPIPEATT: " (itoa made) " attribute(s) added."))
      (if have
        (pfl:say (strcat "  Already there, left alone: " (pfl:join (reverse have)))))
      (pfl:say "  Check them in Properties, then BSAVE and SAVE the drawing.")))
+  (princ))
+
+
+;;; ==========================================================================
+;;; SECTION 2c  --  PFMKPLABEL.  The plan label on a structure block.
+;;; ==========================================================================
+;;; Run INSIDE BEDIT on each structure definition (PFSUITE_CBI, PFSUITE_SMH,
+;;; every PFSUITE_HDWL_<size> ...) -- once per definition, not per insert.
+;;; Adds PFPLABEL (Jake, 2026-11-20): VISIBLE, unlocked so it can be dragged,
+;;; level, middle-left, at the plan label height setting (2.4), in PFNAME's
+;;; layer and text style.  One click places it (Enter: 3 ft right of the
+;;; base point).  It may show in every visibility state: only the plan block
+;;; is ever filled in -- on a profile copy it stays blank and draws nothing.
+;;; Then BSAVE, SAVE the library drawing, redefine the block where it is
+;;; used, and ATTSYNC it.  PFASSIGN fills it from then on.
+;;;
+;;; THE ROTATE GRIP (Jake, 2026-11-20): a Rotation parameter PFPLROT on the
+;;; block's base point, its grip out at the label, and a Rotate action on
+;;; PFPLABEL -- so the drafter swings the name around the structure.
+;;; Scripted through BPARAMETER / BACTION.  Autodesk's pages give the order
+;;; of their prompts but not every prompt, so only the certain part is typed
+;;; for you: whatever AutoCAD still asks after that is handed to you, said on
+;;; the command line.  Then what was really made is checked and said.  Run it
+;;; again on a block that has the label but no grip: it adds the grip only.
+;;; PFGATE checks the grip turns the label about the base point.
+
+;; (pfb:bedit-ents pat) -> the Block Editor objects whose type matches pat
+(defun pfb:bedit-ents (pat / ss i e out)
+  (if (setq ss (ssget "_X"))
+    (repeat (setq i (sslength ss))
+      (setq e (ssname ss (setq i (1- i))))
+      (if (wcmatch (strcase (cdr (assoc 0 (entget e)))) pat) (setq out (cons e out)))))
+  out)
+
+;; (pfb:hand-over msg) -> nil   a command still asking: the drafter answers it
+(defun pfb:hand-over (msg)
+  (if (> (getvar "CMDACTIVE") 0) (pfl:say msg))
+  (while (> (getvar "CMDACTIVE") 0) (command pause))
+  (princ))
+
+;; (pfb:mk-plabel-att src p ht) -> the new PFPLABEL attribute definition | nil
+(defun pfb:mk-plabel-att (sd p ht / e)
+  (if (setq e (entmakex
+                (list '(0 . "ATTDEF") '(100 . "AcDbEntity")
+                      (cons 8 (cdr (assoc 8 sd)))
+                      '(100 . "AcDbText")
+                      (cons 10 p) (cons 40 ht) '(1 . "") '(50 . 0.0)
+                      (cons 7 (cdr (assoc 7 sd)))
+                      '(72 . 0) (cons 11 p)
+                      '(100 . "AcDbAttributeDefinition")
+                      '(3 . "Plan label (the tool writes the name)")
+                      (cons 2 *pf-tag-plan-label*)
+                      '(70 . 0) '(74 . 2))))
+    (progn
+      ;; draggable: LockPosition off, set through ActiveX (entmake doesn't
+      ;; reliably take it -- see PFMKPIPEATT)
+      (vl-catch-all-apply 'vla-put-LockPosition (list (vlax-ename->vla-object e) :vlax-false))
+      e)))
+
+;; (pfb:mk-plabel-grip att p) -> (param . action) what got made, either nil
+(defun pfb:mk-plabel-grip (att p / ps0 as0 ps as par act echo)
+  (setq ps0  (pfb:bedit-ents "*ROTATION*PARAM*")
+        as0  (pfb:bedit-ents "*ROTATE*ACTION*")
+        echo (getvar "CMDECHO"))
+  (setvar "CMDECHO" 1)                      ; you see what AutoCAD asks
+  ;; the parameter: named, based on the base point, grip out at the label
+  (pfl:say (strcat "  Adding the Rotation parameter " *pf-param-plan-rot* " ..."))
+  (vl-catch-all-apply 'command
+    (list "_.BPARAMETER" "_Rotation" "_Name" *pf-param-plan-rot* '(0.0 0.0 0.0) p p))
+  (pfb:hand-over "  ** BPARAMETER is still asking -- answer it (the grip goes at the label).")
+  (setq ps  (pfb:bedit-ents "*ROTATION*PARAM*")
+        par (car (vl-remove-if '(lambda (x) (member x ps0)) ps)))
+  ;; the action: that parameter, the label as its selection
+  (if par
+    (progn
+      (pfl:say "  Adding the Rotate action on the label ...")
+      (vl-catch-all-apply 'command (list "_.BACTION" par))
+      (if (> (getvar "CMDACTIVE") 0) (vl-catch-all-apply 'command (list att "")))
+      (pfb:hand-over (strcat "  ** BACTION is still asking -- answer it (select only "
+                             *pf-tag-plan-label* ", then Enter)."))
+      (setq as  (pfb:bedit-ents "*ROTATE*ACTION*")
+            act (car (vl-remove-if '(lambda (x) (member x as0)) as)))))
+  (setvar "CMDECHO" echo)
+  (cons par act))
+
+(defun c:PFMKPLABEL ( / src sd ht pt p e new r)
+  (cond
+    ((not (boundp '*pf-tag-plan-label*))
+     (pfl:say "PFMKPLABEL: load pf-load.lsp first."))
+    ((/= 1 (getvar "BLOCKEDITOR"))
+     (pfl:say "PFMKPLABEL: not in the Block Editor.  BEDIT a structure block first (PFSUITE_CBI ...)."))
+    ((null (setq src (pfb:find-attdef *pf-tag-name*)))
+     (pfl:say (strcat "PFMKPLABEL: no " *pf-tag-name* " here -- is this a PFSUITE structure block?")))
+    ((and (setq e (pfb:find-attdef *pf-tag-plan-label*)) (pfb:bedit-ents "*ROTATION*PARAM*"))
+     (pfl:say (strcat "PFMKPLABEL: " *pf-tag-plan-label* " and a rotation grip are already here -- left alone."
+                      "  (PFGATE checks the grip after BSAVE.)")))
+    (T
+     ;; the label, unless it's here already
+     (if (null e)
+       (progn
+         (setq sd (entget src)
+               ht (cond ((pft:num (cdr (assoc "PFPLANHT" *pf-settings*)))) (2.4)))
+         (initget 0)
+         (setq pt (getpoint "\nWhere the plan label sits (its left end) <3' right of the base point>: "))
+         (setq p (if pt (trans pt 1 0) '(3.0 0.0 0.0))
+               p (list (car p) (cadr p) 0.0))
+         (if (setq e (pfb:mk-plabel-att sd p ht))
+           (setq new T)
+           (pfl:say "PFMKPLABEL: AutoCAD would not add the attribute."))))
+     (if e
+       (progn
+         (if new
+           (pfl:say (strcat "PFMKPLABEL: " *pf-tag-plan-label* " added -- visible, draggable, "
+                            (rtos ht 2 2) " high, PFNAME's layer and style."))
+           (pfl:say (strcat "PFMKPLABEL: " *pf-tag-plan-label* " is here -- adding its rotate grip.")))
+         ;; the grip, out at the label's insertion point
+         (setq p (cdr (assoc (if (and (= 0 (cdr (assoc 72 (entget e)))) (= 0 (cdr (assoc 74 (entget e))))) 10 11)
+                             (entget e)))
+               r (pfb:mk-plabel-grip e (list (car p) (cadr p) 0.0)))
+         (pfl:say (strcat "  Rotation parameter: " (if (car r) "made" "NOT made")
+                          "   Rotate action: " (if (cdr r) "made" "NOT made")))
+         (if (not (and (car r) (cdr r)))
+           (pfl:say (strcat "  ** Finish by hand: BPARAMETER Rotation on the base point, named " *pf-param-plan-rot*
+                            "; then BACTION, pick it, select " *pf-tag-plan-label* ".")))
+         (pfl:say (strcat "  In Properties, check the parameter is named " *pf-param-plan-rot*
+                          ".  Then BSAVE and SAVE; PFGATE on a placed one checks the grip."))
+         (pfl:say "  In each drawing: redefine the block, ATTSYNC, PFASSIGN.")))))
   (princ))
 
 
@@ -624,6 +763,25 @@
          (setq b nil)))
      (and a b))))
 
+;; A fixed-size headwall has no adjustable barrel depth.  Its reference
+;; elevation is the flowline at the insertion point, and only PFTOP moves.
+(defun pfb:fit-headwall-report (e / sl y0 moved)
+  (setq y0 (cadr (cdr (assoc 10 (entget e))))
+        sl (pfl:station-line e))
+  (pfl:say "")
+  (pfl:say "  Headwall station line / flowline basepoint")
+  (cond
+    ((null sl)
+     (pfl:say "    FAIL  no direct station line in the PROFILE state") nil)
+    ((> (abs (- (car sl) y0)) 0.01)
+     (pfl:say "    FAIL  station line does not start at the flowline basepoint") nil)
+    ((= (type (setq moved (pfb:end-moves e *pf-param-top*))) 'STR)
+     (pfl:say (strcat "    FAIL  PFTOP: " moved)) nil)
+    ((or (> (abs (car moved)) 0.01) (< (abs (cdr moved)) 0.99))
+     (pfl:say "    FAIL  PFTOP did not move only the station line's top") nil)
+    (T
+     (pfl:say "    PASS  PFTOP moves the top and leaves the flowline end fixed") T)))
+
 ;; (pfb:att-move-check e tag) -> T if a LockPosition label can be moved by
 ;;   code and stays put through a REGEN.  Put back after.
 (defun pfb:att-move-check (e tag / a ed was now ok)
@@ -741,6 +899,100 @@
      (pfl:say "    one-sided line that is meant to be there.")
      ok)))
 
+;; (pfb:nudge p v0) -> the step that took (1.0 or -1.0) | nil   p set to v0+1,
+;;   or v0-1 when AutoCAD refuses that (a grip at its limit)
+(defun pfb:nudge (p v0)
+  (cond ((= T (pfd:prop-put p (+ v0 1.0))) 1.0)
+        ((= T (pfd:prop-put p (- v0 1.0))) -1.0)))
+
+;; (pfb:floor-check e) -> T when the sanitary floor grips work as drawn
+;;   (Jake, 2026-11-19): PFFLOORDWN moves ONE end of the floor, straight down
+;;   its wall, and leaves the station line's top alone; PFDEPTH carries that
+;;   end along with the rest of the floor, and its grip with it.  Each nudged
+;;   by 1, measured, then put back -- after a failure too.  Block X is read
+;;   from the station line at X 0, so "one end" = one side of it.
+(defun pfb:floor-check (e / obj fp dp f0 d0 a b c t0 t1 fnow r moved dy s far i why rd rf good)
+  (setq obj (vlax-ename->vla-object e)
+        fp  (pfl:dynprop obj *pf-param-floor*)
+        dp  (pfl:dynprop obj *pf-param-depth*))
+  (pfl:say "")
+  (pfl:say (strcat "  Sanitary floor  (" *pf-param-floor* " and " *pf-param-depth*
+                   " each nudged by 1, then put back)"))
+  (cond
+    ((or (null fp) (null dp))
+     (pfl:say (strcat "    FAIL  no " (if fp *pf-param-depth* *pf-param-floor*) " parameter"))
+     nil)
+    ((not (and (numberp (setq f0 (pfl:prop-get fp))) (numberp (setq d0 (pfl:prop-get dp)))))
+     (pfl:say "    FAIL  a floor parameter has no readable value")
+     nil)
+    (T
+     (setq a  (pfl:geom-pts e)
+           t0 (pfl:end-y e 'top))
+     ;; measure only -- judged below, after everything is put back
+     (setq r (vl-catch-all-apply
+               '(lambda ()
+                  (if (pfb:nudge fp f0)
+                    (setq b (pfl:geom-pts e) t1 (pfl:end-y e 'top)))
+                  (pfd:prop-put fp f0)
+                  (if (pfb:nudge dp d0)
+                    (setq c (pfl:geom-pts e) fnow (pfl:prop-get fp)))
+                  (pfd:prop-put dp d0))))
+     (setq rd (pfd:prop-put dp d0)
+           rf (pfd:prop-put fp f0))
+     ;; which vertices PFFLOORDWN moved
+     (if (and b (= (length a) (length b)))
+       (progn
+         (setq i 0)
+         (foreach p a
+           (if (> (distance p (nth i b)) 1e-6) (setq moved (cons i moved)))
+           (setq i (1+ i)))))
+     (if moved
+       (setq s  (if (> (car (nth (car moved) a)) 0.0) 1.0 -1.0)
+             dy (if (and c (= (length a) (length c)))
+                  (- (cadr (nth (car moved) c)) (cadr (nth (car moved) a))))))
+     ;; the far end of the floor moves with PFDEPTH by the same amount
+     (if (and moved dy c (= (length a) (length c)))
+       (progn
+         (setq i 0)
+         (foreach p a
+           (if (and (< (* s (car p)) -1e-6)
+                    (equal (- (cadr (nth i c)) (cadr p)) dy 1e-6)
+                    (> (abs dy) 1e-6))
+             (setq far T))
+           (setq i (1+ i)))))
+     (setq why
+       (cond
+         ((vl-catch-all-error-p r) (vl-catch-all-error-message r))
+         ((or (/= rd T) (/= rf T)) "could not put a floor parameter back")
+         ((null b) (strcat "AutoCAD refused a " *pf-param-floor* " change"))
+         ((/= (length a) (length b))
+          (strcat "the block changed shape when " *pf-param-floor* " moved"))
+         ((null moved)
+          (strcat *pf-param-floor* " does not move the floor -- check its stretch action"))
+         ((not (equal t0 t1 1e-4))
+          (strcat *pf-param-floor* " moves the station line's top"))
+         ((vl-some '(lambda (k) (> (abs (- (car (nth k a)) (car (nth k b)))) 1e-6)) moved)
+          (strcat *pf-param-floor* " moves something sideways -- the wall would lean"))
+         ((vl-some '(lambda (k) (< (* s (car (nth k a))) 1e-6)) moved)
+          (strcat *pf-param-floor* " moves both sides -- its stretch frame should take one corner only"))
+         ((null c) (strcat "AutoCAD refused a " *pf-param-depth* " change"))
+         ((/= (length a) (length c))
+          (strcat "the block changed shape when " *pf-param-depth* " moved"))
+         ((< (abs dy) 1e-6)
+          (strcat *pf-param-depth* " leaves the " *pf-param-floor*
+                  " end behind -- that corner belongs inside " *pf-param-depth* "'s stretch frame"))
+         ((not far)
+          (strcat *pf-param-depth* " does not move the other end of the floor by the same amount"))
+         ((equal fnow f0 1e-6)
+          (strcat "the " *pf-param-floor* " grip stays behind when " *pf-param-depth*
+                  " moves -- add it to " *pf-param-depth* "'s stretch selection"))))
+     (setq good (null why))
+     (pfl:say (if good
+                (strcat "    PASS  " *pf-param-floor* " drops one end straight down; "
+                        *pf-param-depth* " carries it, grip and all")
+                (strcat "    FAIL  " why)))
+     good)))
+
 ;; (pfb:gate-pipe e obj) -> T if the PFPIPE insert has what pf-pipe uses
 (defun pfb:gate-pipe (e obj / ok vis n)
   (setq ok T)
@@ -771,16 +1023,17 @@
                           (cadr vis)))
        (setq ok nil))))
   (pfl:say "")
-  (pfl:say "  Carlson libraries")
-  (if (setq n (length (pfp:sizes)))
-    (if (> n 0)
-      (pfl:say (strcat "    pipesize.dta  " (itoa n) " round sizes"))
-      (progn (setq ok nil)
-             (pfl:say "    pipesize.dta  NOT READ -- PFPIPE will refuse to run"))))
-  (pfl:say (strcat "    pipen.dta     "
-                   (if (pfp:mats)
-                     (strcat (itoa (length (pfp:mats))) " materials")
-                     "none -- material comes from the grid, or stays blank")))
+  (pfl:say "  The pipe table (pf-cfg\\pf-pipes.csv)")
+  (if (> (setq n (length (pft:sizes nil))) 0)
+    (pfl:say (strcat "    " (itoa (length (pft:mats-all))) " materials, " (itoa n) " sizes"))
+    (progn (setq ok nil)
+           (pfl:say "    NOT READ -- PFPIPE will refuse to run")))
+  (foreach s (append (pft:notes) (pft:default-notes)) (pfl:say (strcat "    ** " s)))
+  ;; the hidden inside / outside diameter tags (2026-11-20)
+  (if (not (and (pfr:attr-ent e *pf-pipe-id*) (pfr:attr-ent e *pf-pipe-od*)))
+    (progn (setq ok nil)
+           (pfl:say (strcat "    FAIL  no " *pf-pipe-id* " / " *pf-pipe-od*
+                            " on the pipe -- BEDIT, add them HIDDEN (PFMKPIPEATT), ATTSYNC"))))
   ok)
 
 ;; (pfb:gate-struct e obj nm) -> T if the structure insert agrees with pf-cfg
@@ -817,6 +1070,21 @@
            ((/= (strcase lu-val) (strcase sz-att))
             (pfl:say (strcat "    NOTE: PFSIZE reads \"" sz-att "\", not \"" lu-val
                              "\".  REGEN and PFGATE again; still different = the field is broken.")))))
+        ((eq (car row) 'SMH)
+         ;; the cone: PFSIZE is the profile state's name (pfs:cone-state)
+         (setq sz-att (cond ((pfr:get e *pf-tag-size*)) ("")))
+         (cond
+           ((= sz-att "")
+            (setq ok nil)
+            (pfl:say (strcat "  cone           PFSIZE is blank -- type one of "
+                             (pfl:join-with ", " *pf-states-cone*))))
+           ((pfs:cone-state sz-att)
+            (pfl:say (strcat "  cone           PFSIZE = " sz-att " -> profile state "
+                             (pfs:cone-state sz-att))))
+           (T
+            (setq ok nil)
+            (pfl:say (strcat "  cone           PFSIZE = " sz-att " is not one of "
+                             (pfl:join-with ", " *pf-states-cone*))))))
         ((/= size "")
          (pfl:say (strcat "  size suffix    " size)))
         (T
@@ -828,8 +1096,12 @@
         (setq ok nil))
 
       (if (not (pfb:param-report "Dynamic parameters"
-                                 (append (if (= size "") (list *pf-param-size* *pf-param-barrel*))
-                                         (list *pf-param-top* *pf-param-depth*))
+                                 (append (cond ((eq (car row) 'SMH)
+                                                (list *pf-param-floor*))
+                                               ((= size "")
+                                                (list *pf-param-size* *pf-param-barrel*)))
+                                         (list *pf-param-top*)
+                                         (if (eq (car row) 'HDWL) nil (list *pf-param-depth*)))
                                  obj))
         (setq ok nil))
 
@@ -885,11 +1157,17 @@
                            (setq *pfd-stage* "listing the block's geometry")
                            (pfb:inventory e)
                            (setq *pfd-stage* "the PFTOP / PFDEPTH dry run")
-                           (if (not (pfb:fit-report e)) (setq ok nil))
+                           (if (not (if (eq (car row) 'HDWL)
+                                      (pfb:fit-headwall-report e)
+                                      (pfb:fit-report e)))
+                             (setq ok nil))
                            (setq *pfd-stage* "the label-move dry run")
                            (if (not (pfb:att-move-check e "PFCON")) (setq ok nil))
                            (setq *pfd-stage* "the size dry run")
-                           (if (not (pfb:size-check e)) (setq ok nil)))))
+                           (if (not (if (eq (car row) 'SMH)
+                                      (pfb:floor-check e)
+                                      (pfb:size-check e)))
+                             (setq ok nil)))))
               (if (vl-catch-all-error-p r)
                 (progn
                   (setq ok nil)
@@ -913,6 +1191,91 @@
                              " BSAVE happened on the wrong state.")))))
       ok)))
 
+;; (pfb:gate-plabel e obj) -> T unless the plan label's grip is wrong
+;;   (2026-11-20).  No PFPLABEL yet: said, not failed.  PFPLABEL with no
+;;   PFPLROT: FAIL.  PFPLROT is nudged a quarter turn and put back: the label
+;;   must turn by that much, about the block's insertion point.
+(defun pfb:gate-plabel (e obj / p v0 a0 p0 a1 p1 ins r ok)
+  (setq ok T ins (pfl:ins e))
+  (pfl:say "")
+  (pfl:say "  Plan label")
+  (cond
+    ((null (pfr:attr-ent e *pf-tag-plan-label*))
+     (pfl:say (strcat "    no " *pf-tag-plan-label* " yet -- BEDIT, PFMKPLABEL")))
+    ((null (setq p (pfl:dynprop obj *pf-param-plan-rot*)))
+     (setq ok nil)
+     (pfl:say (strcat "    FAIL  no " *pf-param-plan-rot* " rotation grip -- BEDIT, PFMKPLABEL adds it"
+                      " (or check the parameter's name in Properties)")))
+    (T
+     (setq v0 (pfl:prop-get p)
+           a0 (cdr (assoc 50 (entget (pfr:attr-ent e *pf-tag-plan-label*))))
+           p0 (pfr:att-pt e *pf-tag-plan-label*))
+     (setq r  (pfd:prop-put p (+ v0 (/ pi 2.0)))
+           a1 (cdr (assoc 50 (entget (pfr:attr-ent e *pf-tag-plan-label*))))
+           p1 (pfr:att-pt e *pf-tag-plan-label*))
+     (pfd:prop-put p v0)
+     (cond
+       ((/= r T) (setq ok nil) (pfl:say (strcat "    FAIL  " *pf-param-plan-rot* ": " r)))
+       ((not (equal (pfl:norm (- a1 a0)) (/ pi 2.0) 0.01))
+        (setq ok nil)
+        (pfl:say (strcat "    FAIL  " *pf-param-plan-rot* " doesn't turn the label -- is "
+                         *pf-tag-plan-label* " in its Rotate action?")))
+       ((not (equal (distance (pfb:2d ins) p0) (distance (pfb:2d ins) p1) 0.01))
+        (setq ok nil)
+        (pfl:say (strcat "    FAIL  the label turns, but not about the block's base point -- move "
+                         *pf-param-plan-rot* "'s base point onto it")))
+       (T (pfl:say (strcat "    ok    " *pf-param-plan-rot* " turns " *pf-tag-plan-label*
+                           " about the base point"))))))
+  ok)
+
+;; (pfb:gate-xing e obj) -> T if the PFSUITE_XING insert has what pf-xing
+;;   uses (Jake builds it, 2026-11-20): every tag, every parameter, and the
+;;   grips doing their jobs -- PFDIA grows the ellipse UP from the insertion
+;;   point, PFODTOP / PFODBOT move a tick, PFTOP / PFBOT the station line.
+;;   Each nudged by 1 and put back.
+(defun pfb:gate-xing (e obj / ok p v0 b0 b1 ell r)
+  (setq ok T)
+  (pfl:say "")
+  (pfl:say "  Attributes")
+  (foreach tg *pf-xing-tags*
+    (if (pfr:attr-ent e tg)
+      (pfl:say (strcat "    ok    " tg))
+      (progn (setq ok nil) (pfl:say (strcat "    MISSING  " tg)))))
+  (pfl:say "  Parameters")
+  (foreach nm (list *pf-xing-dia* *pf-xing-odtop* *pf-xing-odbot* *pf-xing-top* *pf-xing-bot*
+                    (strcat *pf-xing-lead* " X") *pf-xing-flip*)
+    (if (pfl:dynprop obj nm)
+      (pfl:say (strcat "    ok    " nm "  = " (vl-princ-to-string (pfl:dynprop-get obj nm))))
+      (progn (setq ok nil) (pfl:say (strcat "    MISSING  " nm)))))
+  ;; PFDIA scales the ellipse from the insertion point: its bottom stays put
+  (setq ell (vl-some '(lambda (sd) (if (= "ELLIPSE" (cdr (assoc 0 sd))) sd)) (pfl:block-ents e nil)))
+  (cond
+    ((null ell) (setq ok nil) (pfl:say "    FAIL  no ellipse in the block"))
+    ((setq p (pfl:dynprop obj *pf-xing-dia*))
+     (setq v0 (pfl:prop-get p)
+           b0 (pfl:bbox obj))
+     (setq r (pfd:prop-put p (* 2.0 v0))
+           b1 (pfl:bbox obj))
+     (pfd:prop-put p v0)
+     (pfl:say (strcat "    " *pf-xing-dia* " x2: the block grows "
+                      (if (and b0 b1) (rtos (- (cadddr b1) (cadddr b0)) 2 3) "?") " up, "
+                      (if (and b0 b1) (rtos (- (cadr b0) (cadr b1)) 2 3) "?") " down"
+                      (if (= r T) "" (strcat "  (" r ")"))))
+     (pfl:say "      (up should be about the ellipse's height x10 per foot; down 0 -- check by eye)")))
+  (foreach tp (list *pf-xing-top* *pf-xing-bot*)
+    (if (setq p (pfl:dynprop obj tp))
+      (progn
+        (setq v0 (pfl:prop-get p) b0 (pfl:station-line e))
+        (pfd:prop-put p (+ v0 1.0))
+        (setq b1 (pfl:station-line e))
+        (pfd:prop-put p v0)
+        (pfl:say (strcat "    " tp " +1 moves the station line's "
+                         (cond ((null (and b0 b1)) "?? (no station line at X 0)")
+                               ((> (abs (- (cadr b1) (cadr b0))) 1e-6) "top")
+                               ((> (abs (- (car b1) (car b0))) 1e-6) "bottom")
+                               (T "NOTHING -- check its stretch")))))))
+  ok)
+
 (defun c:PFGATE ( / e obj nm ok)
   (cond
     ((not (boundp '*pf-blocks*))
@@ -932,9 +1295,11 @@
       (pfl:say "=== PFGATE ===========================================")
       (pfl:say (strcat "  DXF name       " (cdr (assoc 2 (entget e)))))
       (pfl:say (strcat "  EffectiveName  " (if nm nm "(unreadable)")))
-      (setq ok (if (and nm (= (strcase nm) (strcase *pf-pipe-block*)))
-                 (pfb:gate-pipe e obj)
-                 (pfb:gate-struct e obj nm)))
+      (setq ok (cond ((and nm (= (strcase nm) (strcase *pf-pipe-block*))) (pfb:gate-pipe e obj))
+                     ((and nm (= (strcase nm) (strcase *pf-xing-block*))) (pfb:gate-xing e obj))
+                     ;; both always run, so both always report
+                     (T (setq ok (pfb:gate-struct e obj nm))
+                        (and (pfb:gate-plabel e obj) ok))))
       (pfl:say "")
       (pfl:say (if ok
                  "  RESULT: ready to test."
@@ -1115,6 +1480,20 @@
       (if (not (pfb:check "  rim still the asserted 770.00"
                           (pfr:get e *pf-tag-rim*) "770.00"))
         (setq ok nil))
+
+      ;; A change only in letter case is still a drafter's edit.
+      (if (not (pfb:check "case test: write a derived name"
+                          (pfr:refresh e *pf-tag-name* "CB-1" *pf-src-rule*) 'written))
+        (setq ok nil))
+      (pfr:put e *pf-tag-name* "Cb-1")
+      (if (not (pfb:check "case-only hand edit -> adopted"
+                          (pfr:refresh e *pf-tag-name* "CB-2" *pf-src-rule*) 'adopted))
+        (setq ok nil))
+      (if (not (pfb:check "  case-only edit kept"
+                          (pfr:get e *pf-tag-name*) "Cb-1"))
+        (setq ok nil))
+      (pfr:put e *pf-tag-name* "CB-1")
+      (pfr:src-put e *pf-tag-name* *pf-src-rule* "CB-1")
 
       (setq memb '(("STORM_DA" 209.299293 -12.381585)))
       (pfr:memb-put e memb)
@@ -1844,7 +2223,8 @@
      (setq def (pfs:fmt-defaults "CBI"))
      (pfb:st "CBI default PFCONPRE" (pfr:input *pf-tag-con-pre* def) "CONST. CURB BOX INLET" nil)
      (pfb:st "CBI default PFELEVPRE" (pfr:input *pf-tag-elev-pre* def) "G.L." nil)
-     (pfb:st "HDWL default PFELEVPRE (no row)" (pfr:input *pf-tag-elev-pre* (pfs:fmt-defaults "HDWL")) "" nil)
+     ;; a headwall's elevation prefix labels its invert (PFINV1), not a row
+     (pfb:st "HDWL default PFELEVPRE (the invert prefix)" (pfr:input *pf-tag-elev-pre* (pfs:fmt-defaults "HDWL")) "INV." nil)
      (pfb:st "type of a CBI insert" (pfs:type-of a) "CBI" nil)
 
      (setq fmts (list (cons "CBI" def))
@@ -2396,7 +2776,7 @@
      (pfb:st "...Assign everything -- back to YA-2/YB-1" (pfr:get j *pf-tag-name*) "YA-2/YB-1" nil))))
 
 ;; --- group 8: PFSTRUCT ---------------------------------------------------------
-(defun pfb:st-struct ( / plans a j b g top fmt r copies ca cja cjb cb ht base row1 cp cpc)
+(defun pfb:st-struct ( / plans a j b g top fmt r copies ca cja cjb cb ht base row1 cp cpc nr nrc)
   (pfl:say "")
   (pfl:say "  8. PFSTRUCT (on the test lines)")
   (setq plans (pfb:yw 'plans))
@@ -2443,7 +2823,29 @@
      (pfb:st "a copied plan structure -- \"two alpha blocks are named\""
              (pfb:heard-p "*two alpha blocks are named YA-1*" (cdr r)) T nil)
      (if (setq cpc (pfb:yw-copy cp "STORM_YA")) (pfd:erase cpc))
-     (pfd:erase cp))))
+     (pfd:erase cp)
+     ;; no rim yet: parked on the grid top line, placeholder row, moves to the
+     ;; rim once typed; no top line there -- skipped (Jake, 2026-11-13)
+     ;; at 10+50, past every other structure, so nothing renumbers
+     (setq nr (pfb:st-plan 1050.0 0.0))
+     (pfr:put nr *pf-tag-rim* "")
+     (pfb:hush 'pfa:run (list (list a j b nr) nil nil))
+     (setq r   (pfb:hush 'pfs:run (list (list nr) (pfg:usable) top fmt))
+           nrc (pfb:yw-copy nr "STORM_YA"))
+     (if nrc (setq made (cons nrc made)))
+     (pfb:st "no rim -- still placed" (car r) '(1 0 0) nil)
+     (pfb:st "...on the grid's top line at its station" (if nrc (pfb:2d (pfl:ins nrc)))
+             (list (pfl:sta->x 1050.0 g) (pfg:top-at (pfl:sta->x 1050.0 g) g top)) 1e-6)
+     (pfb:st "...its elevation row a placeholder" (and nrc (pfb:wc (pfr:get nrc "PFELEV") (strcat "*" *pf-elev-placeholder* "*"))) T nil)
+     (pfr:put nr *pf-tag-rim* "751.00")
+     (pfb:yw-refresh)
+     (pfb:st "a rim typed -- the copy moves to it" (if nrc (cadr (pfl:ins nrc))) (pfl:elev->y 751.0 g) 1e-6)
+     (pfr:put nr *pf-tag-rim* "")
+     (pfb:st "no rim and no top line there -- nothing to sit on" (pfs:copy-y nr g (pfl:sta->x 1050.0 g) nil) nil nil)
+     (setq r (pfs:place nil nr "STORM_YA" 1050.0 g nil))
+     (pfb:st "...skipped, and said why" (list (car r) (pfb:wc (cdr r) "*no grid top line*")) '(nil T) nil)
+     (if (pfb:live nrc) (pfd:erase nrc))
+     (pfd:erase nr))))
 
 ;; --- group 9: PFREFRESH --------------------------------------------------------
 (defun pfb:st-refresh ( / plans a j b d g r ca cja cb x0 p obj d0 d1 objA cur new dup)
@@ -2638,7 +3040,7 @@
 ;;   What the trees and panels show, and the refusals.  The OpenDCL controls
 ;;   themselves can't be driven from here; their handlers call the work
 ;;   functions groups 6-11 already drive.
-(defun pfb:st-palette ( / rows ya yc r)
+(defun pfb:st-palette ( / rows ya yc r a j d srows prows ents)
   (pfl:say "")
   (pfl:say "  12. Palette (what the trees and panels show; the clicks are yours)")
   (cond
@@ -2667,7 +3069,804 @@
      (setq *pfw-sel-setup* ya r (pfb:hush 'pfw:need (list 'setup 'stub)))
      (pfb:st "Anchor on a line that has a grid -- refused, use Edit"
              (list (car r) (pfb:heard-p "*use Edit*" (cdr r))) '(nil T) nil)
-     (setq *pfw-sel-run* nil *pfw-sel-setup* nil))))
+     ;; the Run tab's structure list and Edit Attributes (2026-11-13).  By now
+     ;; YA holds YA-1 (sta 300) and YA-2 (sta 600), both placed.
+     (setq a (car (pfb:yw 'plans)) j (cadr (pfb:yw 'plans)))
+     (cond
+       ((not (and (pfb:live a) (pfb:live j))) (pfl:say "  SKIP  no test structures left (groups 7-11)"))
+       (T
+        (setq srows (pfw:struct-rows "STORM_YA"))
+        (pfb:st "a line picked -- its structures, by station" (mapcar 'cadr srows) '("YA-1" "YA-2") nil)
+        (pfb:st "...their stations" (mapcar 'caddr srows) '(300.0 600.0) 0.01)
+        (pfb:st "...placed" (mapcar 'cadddr srows) '("placed" "placed") nil)
+        (setq d (pfb:st-plan 900.0 0.0))
+        (pfr:put d *pf-tag-rim* "")
+        (pfb:hush 'pfa:run (list (list a j d) nil nil))
+        (pfb:st "status: not placed, no rim" (cadddr (assoc d (pfw:struct-rows "STORM_YA"))) "not placed (no rim)" nil)
+        (pfr:put d *pf-tag-rim* "751.00")
+        (pfb:st "status: not placed" (cadddr (assoc d (pfw:struct-rows "STORM_YA"))) "not placed" nil)
+        (pfd:move d (pfb:ya-pt 910.0 0.0))
+        (pfb:st "status: moved since Assign" (cadddr (assoc d (pfw:struct-rows "STORM_YA"))) "moved since Assign" nil)
+        (pfd:erase d)
+        ;; the combined list maps a click to the entity, even with pipes mixed in
+        (setq *pfw-items* (list (list 'structure a "YA-1" 300.0 300.0 "placed")
+                                (list 'structure j "YA-2" 600.0 600.0 "placed")))
+        (pfb:st "row pick: the first row (0)" (cadr (pfw:run-row-at 0)) a nil)
+        (pfb:st "row pick: the second row" (cadr (pfw:run-row-at 1)) j nil)
+        (pfb:st "row pick: no row (-1) -- nothing" (pfw:run-row-at -1) nil nil)
+        (pfb:st "row pick: past the end -- nothing" (pfw:run-row-at 9) nil nil)
+        (setq *pfw-sel-struct* nil *pfw-sel-pipe* nil
+              r (pfb:hush 'pfw:on-item (list 0)))
+        (pfb:st "a row picked -- recorded, and said" (list *pfw-sel-struct* (pfb:heard-p "*YA-1 picked*" (cdr r)))
+                (list a T) nil)
+        (pfb:hush 'pfw:on-item (list -1))
+        (pfb:st "...a click on no row after it doesn't wipe the pick" *pfw-sel-struct* a nil)
+        (if (setq prows (pfw:pipe-rows "STORM_YA"))
+          (progn
+            (setq *pfw-items* (list (list 'structure a "YA-1" 300.0 300.0 "placed")
+                                    (list 'pipe (caar prows) "Pipe test" 400.0 500.0 "Uses default")
+                                    (list 'structure j "YA-2" 600.0 600.0 "placed")))
+            (pfb:hush 'pfw:on-item (list 1))
+            (pfb:st "interleaved pipe row selects the pipe, not a structure"
+                    (list *pfw-sel-pipe* *pfw-sel-struct*)
+                    (list (caar prows) nil) nil)
+            (pfb:hush 'pfw:on-item (list 2))
+            (pfb:st "structure after pipe still selects the structure"
+                    (list *pfw-sel-struct* *pfw-sel-pipe*) (list j nil) nil)))
+        (setq *pfw-sel-run* ya *pfw-sel-struct* nil *pfw-sel-pipe* nil
+              r (pfb:hush 'pfw:need-edit-target nil))
+        (pfb:st "Edit Attributes with no item picked -- refused, and said"
+                (list (car r) (pfb:heard-p "*pick a structure*" (cdr r))) '(nil T) nil)
+        ;; 2026-11-20: it once returned T, not the item (AutoLISP's or), and
+        ;; Edit Attributes stopped on "lentityp T" with a structure picked.
+        (setq *pfw-sel-struct* a r (pfb:hush 'pfw:need-edit-target nil))
+        (pfb:st "Edit Attributes with a structure picked -- hands back that structure" (car r) a nil)
+        (if prows
+          (progn
+            (setq *pfw-sel-struct* nil *pfw-sel-pipe* (caar prows)
+                  r (pfb:hush 'pfw:need-edit-target nil))
+            (pfb:st "Edit Attributes with a pipe picked -- hands back that pipe" (car r) (caar prows) nil)))
+        (setq *pfw-sel-struct* nil *pfw-sel-pipe* nil)
+        ;; Edit Attributes opens the plan block, then its copy on the line
+        (pfb:st "Edit Attributes finds the structure's copy on the picked line"
+                (pfw:struct-copy a "STORM_YA") (pfb:yw-copy a "STORM_YA") nil)
+        (pfb:st "...and none on a line it has no copy on" (pfw:struct-copy a "STORM_YB") nil nil)
+        ;; after the dialogs (yours): a rim typed on the plan block moves its
+        ;; copy; a prefix typed on that copy stays a hand edit on it.
+        (pfr:put a *pf-tag-rim* "754.00")
+        (pfr:put (pfb:yw-copy a "STORM_YA") *pf-tag-sta-pre* "STN.")
+        (pfb:hush 'pfw:after-edit (list "STORM_YA" nil nil))
+        (pfb:st "after the edit -- its copy moves to the new rim"
+                (cadr (pfl:ins (pfb:yw-copy a "STORM_YA"))) (pfl:elev->y 754.0 (pfg:grid (pfb:yw 'aya))) 1e-6)
+        (pfb:st "...a typed prefix stays on that copy"
+                (pfb:wc (pfr:get (pfb:yw-copy a "STORM_YA") "PFSTA1") "STN. *") T nil)
+        (pfb:st "...the other copy keeps its own prefix"
+                (pfb:wc (pfr:get (pfb:yw-copy j "STORM_YA") "PFSTA1") "STA. *") T nil)))
+     (setq *pfw-sel-run* nil *pfw-sel-setup* nil *pfw-sel-struct* nil
+           *pfw-sel-pipe* nil *pfw-items* nil))))
+
+;; --- group 13: saved defaults (pf-defaults) -----------------------------------
+;;   The look-up order on a made-up type and utility, so no real saved default
+;;   is read or touched; then on two test CBIs, a typed value against an old
+;;   tool-written one.  Every record it saves is reset; a defaults dictionary
+;;   that wasn't there before is removed again.
+(defun pfb:st-defaults ( / had ty ut ln ln2 tag e1 e2 inp d)
+  (pfl:say "")
+  (pfl:say "  13. Saved defaults (line, then utility, then drawing, then built-in)")
+  (setq had (and (pfv:dict nil) T)
+        ty  "ZZTEST" ut "PFTEST" ln "PFTEST_ZA" ln2 "PFTEST_ZB"
+        tag *pf-tag-con-pre*)
+  (pfb:st "keys can't run together (AB+C is not A+BC)"
+          (= (pfv:key "AB" "C" "STRUCT" ty tag) (pfv:key "A" "BC" "STRUCT" ty tag)) nil nil)
+  (pfb:st "a line's utility: before the first _" (pfv:utility "storm_ba_2") "STORM" nil)
+  (pfb:st "nothing saved -- the built-in" (pfv:effective ln "STRUCT" ty tag "BUILT") "BUILT" nil)
+  (pfv:save "" "" "STRUCT" ty tag "DWG")
+  (pfb:st "a drawing default" (pfv:effective ln "STRUCT" ty tag "BUILT") "DWG" nil)
+  (pfv:save ut "" "STRUCT" ty tag "UTIL")
+  (pfb:st "a utility default beats the drawing's" (pfv:effective ln "STRUCT" ty tag "BUILT") "UTIL" nil)
+  (pfv:save ut ln "STRUCT" ty tag "LINE")
+  (pfb:st "a line default beats the utility's" (pfv:effective ln "STRUCT" ty tag "BUILT") "LINE" nil)
+  (pfb:st "...only on its own line" (pfv:effective ln2 "STRUCT" ty tag "BUILT") "UTIL" nil)
+  (pfb:st "...only for its own block type" (pfv:effective ln "STRUCT" "ZZTEST2" tag "BUILT") "BUILT" nil)
+  (pfb:st "the dialog's Inherited Default leaves the line out"
+          (pfv:effective-for ut "" "STRUCT" ty tag "BUILT") "UTIL" nil)
+  (pfv:save ut ln "STRUCT" ty tag "")
+  (pfb:st "a saved blank is a default, not nothing" (pfv:effective ln "STRUCT" ty tag "BUILT") "" nil)
+  (pfv:save ut ln "STRUCT" ty tag "LINE2")
+  (pfb:st "saving again replaces it" (pfv:raw ut ln "STRUCT" ty tag) "LINE2" nil)
+  (pfb:st "reset -- the record is gone"
+          (list (pfv:reset ut ln "STRUCT" ty tag) (pfv:raw ut ln "STRUCT" ty tag)) '(T nil) nil)
+  (pfb:st "...back to the utility's" (pfv:effective ln "STRUCT" ty tag "BUILT") "UTIL" nil)
+  (pfv:reset ut "" "STRUCT" ty tag)
+  (pfv:reset "" "" "STRUCT" ty tag)
+  (pfb:st "all reset -- the built-in again" (pfv:effective ln "STRUCT" ty tag "BUILT") "BUILT" nil)
+  ;; on blocks: a value typed by hand is kept; the tool's old one takes the
+  ;; saved default.  Line STORM_ZZ is group 1's test line.
+  (cond
+    ((not (tblsearch "BLOCK" (cadr (assoc 'CBI *pf-blocks*))))
+     (pfl:say (strcat "  SKIP  on blocks: no " (cadr (assoc 'CBI *pf-blocks*)) " in this drawing")))
+    ((not (and (setq e1 (pfb:st-cbi (list 1.0e7 (+ 1.0e7 200.0)) "ZZ-8"))
+               (setq e2 (pfb:st-cbi (list (+ 1.0e7 50.0) (+ 1.0e7 200.0)) "ZZ-9"))))
+     (setq n-fail (1+ n-fail)) (pfl:say "  FAIL  could not insert test CBIs"))
+    ((not (pfr:attr-ent e1 tag))
+     (pfl:say (strcat "  SKIP  on blocks: the CBI has no " tag " -- BEDIT, PFMKATT, ATTSYNC")))
+    (T
+     ;; e1: typed before provenance existed (no SRC).  e2: the tool's old value.
+     (pfr:put e1 tag "MY PRE")
+     (pfr:put e2 tag "OLD PRE") (pfr:src-put e2 tag *pf-src-rule* "OLD PRE")
+     (pfv:save "STORM" "STORM_ZZ" "STRUCT" "CBI" tag "ZZ LINE PRE")
+     (setq inp (pfv:inputs e1 "STORM_ZZ" "STRUCT" "CBI" *pf-tags-fmt* (pfs:fmt-defaults "CBI")))
+     (pfv:inputs e2 "STORM_ZZ" "STRUCT" "CBI" *pf-tags-fmt* (pfs:fmt-defaults "CBI"))
+     (pfb:st "a value typed before provenance -- kept" (pfr:get e1 tag) "MY PRE" nil)
+     (pfb:st "...now on record as typed" (pfr:asserted-p e1 tag) T nil)
+     (pfb:st "...and what the labels are built from" (pfr:input tag inp) "MY PRE" nil)
+     (pfb:st "the tool's old value -- the line's saved default" (pfr:get e2 tag) "ZZ LINE PRE" nil)
+     (pfv:reset "STORM" "STORM_ZZ" "STRUCT" "CBI" tag)))
+  ;; leave the drawing as found
+  (if (and (not had) (setq d (pfv:dict nil)))
+    (if (dictremove (namedobjdict) *pfv-dict*) (entdel d))))
+
+;; (pfb:st-def key sized) -> the first block definition of this *pf-blocks*
+;;   type in the drawing | nil.  sized T: only one with a size in its name.
+(defun pfb:st-def (key sized / d nm hit)
+  (setq d (tblnext "BLOCK" T))
+  (while (and d (null hit))
+    (setq nm (cdr (assoc 2 d)))
+    (if (and (/= "*" (substr nm 1 1))
+             (eq (car (pfr:row-for nm)) key)
+             (or (not sized) (/= "" (pfr:size-of nm))))
+      (setq hit nm))
+    (setq d (tblnext "BLOCK")))
+  hit)
+
+;; --- group 14: headwall and sanitary blocks --------------------------------------
+;;   The names (headwalls are one block PER SIZE, box sizes too -- Jake,
+;;   2026-11-12) run anywhere.  The rest needs the test world and the draft
+;;   blocks in this drawing: a headwall and a sanitary MH on STORM_YA, past
+;;   every other test structure, placed by PFSTRUCT's work and kept by
+;;   PFREFRESH's, both on each block's saved defaults (fmt nil, as the
+;;   commands run).  Erased after; the line renumbered back.
+;; (pfb:state-of e) -> the insert's visibility state, upper case | ""
+(defun pfb:state-of (e / p)
+  (if (setq p (pfl:visprop (vlax-ename->vla-object e)))
+    (strcase (vl-princ-to-string (pfl:prop-get p)))
+    ""))
+
+(defun pfb:st-blocks ( / hwn smn g top plans hw sm hwc smc r p bot fl fobj)
+  (pfl:say "")
+  (pfl:say "  14. Headwall and sanitary blocks")
+  (pfb:st "PFSUITE_HDWL_24 is a headwall" (car (pfr:row-for "PFSUITE_HDWL_24")) 'HDWL nil)
+  (pfb:st "PFSUITE_HDWL_24x36 is a headwall" (car (pfr:row-for "PFSUITE_HDWL_24x36")) 'HDWL nil)
+  (pfb:st "...its size reads 24x36" (pfr:size-of "PFSUITE_HDWL_24x36") "24x36" nil)
+  (pfb:st "...in any case" (car (pfr:row-for "pfsuite_hdwl_24X36")) 'HDWL nil)
+  (pfb:st "not sizes: 24x, x36, 24x36x48, LABEL"
+          (mapcar 'pfr:row-for '("PFSUITE_HDWL_24x" "PFSUITE_HDWL_x36"
+                                 "PFSUITE_HDWL_24x36x48" "PFSUITE_CBI_LABEL"))
+          '(nil nil nil nil) nil)
+  (pfb:st "PFSUITE_SMH is a sanitary MH" (car (pfr:row-for "PFSUITE_SMH")) 'SMH nil)
+  ;; its cone is its PFSIZE, any case, spaces ignored (Jake, 2026-11-19)
+  (pfb:st "cone sizes: 48x24, 48X30, \"48 x 36\" -> their states"
+          (mapcar 'pfs:cone-state '("48x24" "48X30" "48 x 36"))
+          '("48x24" "48x30" "48x36") nil)
+  (pfb:st "not cones: 60, 48x, blank" (mapcar 'pfs:cone-state '("60" "48x" "")) '(nil nil nil) nil)
+  (setq hwn (pfb:st-def 'HDWL T) smn (pfb:st-def 'SMH nil))
+  (cond
+    ((null (pfb:yw 'aya)) (pfl:say "  SKIP  the rest: no test world (groups 6-11)"))
+    ((not (or hwn smn))
+     (pfl:say "  SKIP  the rest: no PFSUITE_HDWL_<size> or PFSUITE_SMH in this drawing -- insert them from the draft library"))
+    (T
+     (setq g     (pfg:grid (pfb:yw 'aya))
+           top   (pfg:top-lines)
+           plans (vl-remove-if-not 'pfb:live (pfb:yw 'plans)))
+     (if (and hwn (setq hw (pfd:insert hwn (pfb:ya-pt 1080.0 0.0))))
+       (progn (setq made (cons hw made)) (pfr:put hw *pf-tag-rim* "745.25")))
+     (if (and smn (setq sm (pfd:insert smn (pfb:ya-pt 1090.0 0.0))))
+       (progn (setq made (cons sm made))
+              (pfr:put sm *pf-tag-rim* "752.00")
+              (pfr:put sm *pf-tag-size* "48x30")))
+     (pfb:hush 'pfa:run (list (append plans (vl-remove nil (list hw sm))) nil nil))
+     (pfb:hush 'pfs:run (list (vl-remove nil (list hw sm)) (pfg:usable) top nil))
+     (if (and hw (setq hwc (pfb:yw-copy hw "STORM_YA"))) (setq made (cons hwc made)))
+     (if (and sm (setq smc (pfb:yw-copy sm "STORM_YA"))) (setq made (cons smc made)))
+
+     ;; the headwall: PFRIM is its flowline, printed in PFINV1 below the symbol
+     (cond
+       ((null hwn) (pfl:say "  SKIP  headwall: no PFSUITE_HDWL_<size> in this drawing"))
+       ((null hwc) (setq n-fail (1+ n-fail)) (pfl:say (strcat "  FAIL  no profile copy of " hwn)))
+       (T
+        (pfb:st (strcat hwn ": PFASSIGN keeps the flowline typed") (pfr:get hw *pf-tag-rim*) "745.25" nil)
+        (pfb:st "...its copy sits at the flowline" (cadr (pfl:ins hwc)) (pfl:elev->y 745.25 g) 1e-6)
+        (pfb:st "...PFSIZE from the block name" (pfr:get hwc *pf-tag-size*) (pfr:size-of hwn) nil)
+        (pfb:st "...no elevation row at the grid top" (pfr:get hwc "PFELEV") "" nil)
+        (pfb:st "...PFINV1 = invert prefix + flowline + suffix" (pfr:get hwc "PFINV1")
+                (pfl:join (list (pfr:get hwc *pf-tag-elev-pre*) "745.25" (pfr:get hwc *pf-tag-elev-suf*))) nil)
+        (setq p (pfr:att-pt hwc "PFINV1") bot (pfs:headwall-bottom hwc))
+        (pfb:st "...PFINV1 on the station line" (car p) (car (pfl:ins hwc)) 1e-6)
+        (pfb:st "...below the whole symbol" (< (cadr p) bot) T nil)
+        ;; dragged by the drafter: left there
+        (setq p (pfb:st-nudge hwc "PFINV1" 5.0 -5.0)
+              r (pfb:hush 'pfu:run (list (list "Line" "STORM_YA") nil nil)))
+        (pfb:st "PFINV1 moved by hand -- left where it is" (pfb:2d (pfr:att-pt hwc "PFINV1")) (pfb:2d p) 1e-6)
+        (pfb:st "...and said" (pfb:heard-p "*PFINV1 moved by hand*" (cdr r)) T nil)
+        (pfr:put hw *pf-tag-rim* "")
+        (pfb:hush 'pfu:run (list (list "Line" "STORM_YA") nil nil))
+        (pfb:st "no flowline yet -- PFINV1 shows the placeholder"
+                (pfb:wc (pfr:get hwc "PFINV1") (strcat "*" *pf-elev-placeholder* "*")) T nil)))
+
+     ;; the sanitary MH: PFSIZE is its cone, typed on the plan block; the
+     ;; copy shows that cone's state (Jake, 2026-11-19)
+     (cond
+       ((null smn) (pfl:say "  SKIP  sanitary: no PFSUITE_SMH in this drawing"))
+       ((null smc) (setq n-fail (1+ n-fail)) (pfl:say (strcat "  FAIL  no profile copy of " smn)))
+       (T
+        (pfb:st (strcat smn ": PFSIZE copied from the plan block") (pfr:get smc *pf-tag-size*) "48x30" nil)
+        (pfb:st "...and the copy shows that cone" (pfb:state-of smc) "48X30" nil)
+        ;; a floor dropped by hand -- a cone change must not undo it
+        (setq fobj (vlax-ename->vla-object smc)
+              fl   (pfl:dynprop-get fobj *pf-param-floor*))
+        (if (numberp fl)
+          (progn (setq fl (+ fl 1.0))
+                 (pfd:dynprop-put fobj *pf-param-floor* fl)))
+        (pfr:put sm *pf-tag-size* "48 X 36")
+        (pfb:hush 'pfu:run (list (list "Line" "STORM_YA") nil nil))
+        (pfb:st "...the plan's cone changed -- the copy follows" (pfr:get smc *pf-tag-size*) "48 X 36" nil)
+        (pfb:st "...and shows it (any case, spaces ignored)" (pfb:state-of smc) "48X36" nil)
+        (if (numberp fl)
+          (pfb:st (strcat "..." *pf-param-floor* " set by hand -- kept")
+                  (pfl:dynprop-get fobj *pf-param-floor*) fl 1e-6)
+          (progn (setq n-fail (1+ n-fail))
+                 (pfl:say (strcat "  FAIL  " smn " has no " *pf-param-floor* " grip"))))
+        (pfr:put smc *pf-tag-size* "48x24")
+        (pfr:put sm *pf-tag-size* "48x30")
+        (pfb:hush 'pfu:run (list (list "Line" "STORM_YA") nil nil))
+        (pfb:st "...a cone typed on the copy -- kept" (pfr:get smc *pf-tag-size*) "48x24" nil)
+        (pfb:st "...and shown" (pfb:state-of smc) "48X24" nil)))
+
+     ;; put the line back as it was
+     (foreach e (list hwc smc hw sm) (if (pfb:live e) (pfd:erase e)))
+     (pfb:hush 'pfa:run (list plans nil nil)))))
+
+;;; ---- 2026-11-20: faces per line, inverts, the pipe table, the plan label,
+;;; crossings.  Groups 15, 16, 18 and 19 run on the test world after group 12;
+;;; 17 runs anywhere.
+
+;; (pfb:yw-pipe-on g s1 z1 s2 z2 size mat) -> the pipe | nil   PFPIPE's work on
+;;   grid g, station / elevation to station / elevation, a given size + material
+(defun pfb:yw-pipe-on (g s1 z1 s2 z2 size mat / r)
+  (setq r (car (pfb:hush 'pfp:place (list (list (pfl:sta->x s1 g) (pfl:elev->y z1 g))
+                                          (list (pfl:sta->x s2 g) (pfl:elev->y z2 g))
+                                          g size mat nil))))
+  (cond
+    ((= (type r) 'STR) (setq n-fail (1+ n-fail)) (pfl:say (strcat "  FAIL  placing a test pipe -- " r)) nil)
+    ((null r) nil)
+    (T (setq made (cons (car r) made)) (car r))))
+
+;; (pfb:inv-elev s) -> the elevation in an invert row "I.O. 745.10 (15\")" | nil
+(defun pfb:inv-elev (s / p r q)
+  (if (and (= (type s) 'STR) (setq p (vl-string-search " " s)))
+    (progn
+      (setq r (substr s (+ p 2)) q (vl-string-search " " r))
+      (distof (if q (substr r 1 q) r) 2))))
+
+;; --- group 15: a face per line (Jake, 2026-11-20) ------------------------------
+(defun pfb:st-faces ( / l cl rng a j cja cjb e r)
+  (pfl:say "")
+  (pfl:say "  15. PFFACE: a face per line, the outlet always the back")
+  (setq l (pfm:line-entry "STORM_YA" (car (pfm:lines))))
+  (cond
+    ((null l) (pfl:say "  SKIP  no STORM_YA line (group 6)"))
+    (T
+     (setq cl (pfl:g 'cl l) rng (pfl:g 'rng l))
+     (pfb:st "mid-line, turned 0 -- in the back, out the front: BF" (car (pfm:face cl 300.0 rng 0.0)) "BF" nil)
+     (pfb:st "...the line runs through it" (caddr (pfm:face cl 300.0 rng 0.0)) T nil)
+     (pfb:st "turned 180 -- the outlet is its FRONT: not written, said why"
+             (pfb:wc (pfm:face cl 300.0 rng pi) "*turned wrong in plan*") T nil)
+     (pfb:st "turned 90 -- the outlet is a SIDE: not written" (= (type (pfm:face cl 300.0 rng (/ pi 2.0))) 'STR) T nil)
+     (pfb:st "the line's outlet end -- nothing downstream, back taken: BF" (car (pfm:face cl 100.0 rng 0.0)) "BF" nil)
+     (pfb:st "...not a through-line" (caddr (pfm:face cl 100.0 rng 0.0)) nil nil)
+     (pfb:st "the top of the line -- nothing upstream, straight through: BF" (car (pfm:face cl 1100.0 rng 0.0)) "BF" nil)
+     (pfb:st "...and said" (pfb:wc (cadddr (pfm:face cl 1100.0 rng 0.0)) "*top of the line*") T nil)
+     (setq a (car (pfb:yw 'plans)) j (cadr (pfb:yw 'plans)))
+     (cond
+       ((not (and (pfb:live a) (pfb:live j))) (pfl:say "  SKIP  on blocks: no test structures left (groups 7-11)"))
+       (T
+        (pfb:hush 'pfa:run (list (list a j) nil nil))
+        (pfb:st "MEMB keeps each line's face" (nth 3 (assoc "STORM_YA" (pfr:memb-get a))) "BF" nil)
+        (pfb:st "a junction: its through-line's face" (nth 3 (assoc "STORM_YA" (pfr:memb-get j))) "BF" nil)
+        (pfb:st "...the branch starting there: its own (side in, back out)" (nth 3 (assoc "STORM_YB" (pfr:memb-get j))) "BS" nil)
+        (pfb:st "...the plan block's PFFACE is the through-line's" (pfr:get j *pf-tag-face*) "BF" nil)
+        (setq cja (pfb:yw-copy j "STORM_YA") cjb (pfb:yw-copy j "STORM_YB"))
+        (if (and cja cjb)
+          (progn
+            (pfb:yw-refresh)
+            (pfb:st "each copy shows its own line's face" (list (pfb:state-of cja) (pfb:state-of cjb)) '("BF" "BS") nil)
+            (pfb:st "...and carries it in PFFACE" (pfr:get cjb *pf-tag-face*) "BS" nil)
+            ;; a face typed on the plan block wins on every copy
+            (pfr:assert j *pf-tag-face* "SS")
+            (pfb:yw-refresh)
+            (pfb:st "PFFACE typed on the plan block -- every copy shows it" (list (pfb:state-of cja) (pfb:state-of cjb))
+                    '("SS" "SS") nil)
+            (pfr:put j *pf-tag-face* "BF") (pfr:src-put j *pf-tag-face* *pf-src-rule* "BF")
+            (pfb:yw-refresh)
+            (pfb:st "...back to the tool's -- each its own again" (list (pfb:state-of cja) (pfb:state-of cjb))
+                    '("BF" "BS") nil))
+          (pfl:say "  SKIP  the junction's copies are gone (group 8-11)"))
+        ;; a structure at the line's very start gets a face now
+        (if (setq e (pfb:st-plan 100.0 0.0))
+          (progn
+            (pfb:hush 'pfa:run (list (list a j e) nil nil))
+            (pfb:st "at the line's outlet end -- a face, not \"set it by hand\"" (pfr:get e *pf-tag-face*) "BF" nil)
+            (pfd:erase e)
+            (pfb:hush 'pfa:run (list (list a j) nil nil)))))))))
+
+;; --- group 16: invert rows (Jake, 2026-11-13 / 11-20) ------------------------
+(defun pfb:st-inverts ( / g a j s1 s2 c1 c2 hw1 hw2 r p1 p2 bot ht x halfw s y ca cja cjb gb pb dn
+                          dp geo)
+  (pfl:say "")
+  (pfl:say "  16. Invert rows (PFREFRESH: pipe ends, else the structure's bottom)")
+  (setq g (if (pfb:yw 'aya) (pfg:grid (pfb:yw 'aya))))
+  (cond
+    ((null g) (pfl:say "  SKIP  the test grids weren't made (group 6)"))
+    ((not (pfr:attr-ent (setq a (car (pfb:yw 'plans))) (car *pf-tags-inv*)))
+     (pfl:say "  SKIP  the CBI has no PFINV1"))
+    (T
+     (setq a (car (pfb:yw 'plans)) j (cadr (pfb:yw 'plans))
+           s1 (pfb:st-plan 400.0 0.0) s2 (pfb:st-plan 500.0 0.0))
+     (pfb:hush 'pfa:run (list (list a j s1 s2) nil nil))
+     (pfb:hush 'pfs:run (list (list s1 s2) (pfg:usable) (pfg:top-lines) nil))
+     (setq c1 (pfb:yw-copy s1 "STORM_YA") c2 (pfb:yw-copy s2 "STORM_YA"))
+     (foreach c (list c1 c2) (if c (setq made (cons c made))))
+     (cond
+       ((not (and c1 c2)) (setq n-fail (1+ n-fail)) (pfl:say "  FAIL  the test structures weren't placed"))
+       (T
+        (pfb:yw-refresh)
+        ;; no pipes: each side's bottom, no size
+        (pfb:st "no pipes -- I.O. and I.I., from the bottom, no size"
+                (list (pfb:wc (pfr:get c1 "PFINV1") "I.O. *") (pfb:wc (pfr:get c1 "PFINV2") "I.I. *")
+                      (pfb:wc (pfr:get c1 "PFINV1") "*(*") (pfr:get c1 "PFINV3"))
+                '(T T nil "") nil)
+        ;; the bottom read off the copy agrees with PFGATE's nudge test
+        (setq dp (pfd:depth-probe c1 *pf-param-depth*))
+        (if (listp dp)
+          (pfb:st "...the bottom it reads is the barrel bottom PFDEPTH moves"
+                  (pfb:inv-elev (pfr:get c1 "PFINV1")) (pfl:y->elev (car dp) g) 0.006)
+          (pfl:say (strcat "  SKIP  bottom check: " dp)))
+        (setq *pfi-geo* nil
+              geo (pfl:walls c1 (pfi:barrel-r c1)) hw1 (if geo (caddr geo) 2.0)
+              geo (pfl:walls c2 (pfi:barrel-r c2)) hw2 (if geo (caddr geo) 2.0))
+        (pfb:st "the walls are found (the barrel's half-width)" (and (pfl:walls c1 (pfi:barrel-r c1)) T) T nil)
+        ;; a pipe from s2's left wall (outlet) down to s1's right wall (inlet)
+        (setq p1 (pfb:yw-pipe-on g (- 500.0 hw2) 745.50 (+ 400.0 hw1) 745.00 15.0 "RCP III"))
+        (pfb:yw-refresh)
+        (pfb:st "a pipe at the right wall -- I.I. from its end, with its size"
+                (pfr:get c1 "PFINV2") "I.I. 745.00 (15\")" nil)
+        (pfb:st "...and at the left wall of the next -- I.O." (pfr:get c2 "PFINV1") "I.O. 745.50 (15\")" nil)
+        (pfb:st "...the other side still the bottom" (pfb:wc (pfr:get c1 "PFINV1") "I.O. *") T nil)
+        ;; layout: one baseline 4 text heights under the lowest, 2 apart, centred
+        (setq ht (pfg:text-ht g) x (car (pfl:ins c1)) halfw (* 0.5 ht *pf-inv-gap-factor*)
+              bot (- (pfl:elev->y (min (pfb:inv-elev (pfr:get c1 "PFINV1")) 745.0) g) (* ht *pf-inv-drop-factor*)))
+        ;; (to 0.06: the row prints the bottom rounded to the hundredth, x10)
+        (pfb:st "rows on one baseline, 4 text heights under the lowest invert"
+                (list (cadr (pfr:att-pt c1 "PFINV1")) (cadr (pfr:att-pt c1 "PFINV2"))) (list bot bot) 0.06)
+        (pfb:st "...2 text heights apart, centred on the station"
+                (list (car (pfr:att-pt c1 "PFINV1")) (car (pfr:att-pt c1 "PFINV2")))
+                (list (- x halfw) (+ x halfw)) 0.01)
+        (pfb:st "...turned to read up" (cdr (assoc 50 (entget (pfr:attr-ent c1 "PFINV1")))) (/ pi 2.0) 1e-6)
+        ;; the line's most downstream structure: pushed right (STORM: 2.5 past its outlet)
+        (if (setq ca (pfb:yw-copy a "STORM_YA"))
+          (pfb:st "the first structure's column is pushed clear (STORM: 2.5 past its outlet)"
+                  (>= (car (pfr:att-pt ca "PFINV1")) (- (+ (- (car (pfl:ins ca)) (caddr (pfi:geo ca))) 2.5) 0.01)) T nil))
+        ;; a pipe end BELOW the bottom
+        (setq gb (pfb:inv-elev (pfr:get c1 "PFINV1"))
+              p2 (pfb:yw-pipe-on g (- 400.0 hw1) (- gb 1.0) 350.0 (- gb 1.5) 15.0 "RCP III"))
+        (setq r (pfb:yw-refresh))
+        (pfb:st "a pipe end below the bottom -- said, the row its own elevation"
+                (list (pfb:heard-p "*BELOW the structure's bottom*" (cdr r))
+                      (pfb:inv-elev (pfr:get c1 "PFINV1")))
+                (list T (- gb 1.0)) 0.006)
+        ;; a row typed over is kept
+        (pfr:put c1 "PFINV2" "HAND ROW")
+        (pfb:yw-refresh)
+        (pfb:st "a row typed over -- kept" (pfr:get c1 "PFINV2") "HAND ROW" nil)
+        (setq r (pfb:yw-refresh))
+        (pfb:st "refreshed again -- nothing changes" (cadr (car r)) 0 nil)
+        ;; a junction: the branch's pipe, on its own grid, in the middle columns
+        (setq cja (pfb:yw-copy j "STORM_YA") cjb (pfb:yw-copy j "STORM_YB"))
+        (if (and cja cjb (pfb:yw 'ayb) (setq gb (pfg:grid (pfb:yw 'ayb))))
+          (progn
+            (setq geo (pfl:walls cjb (pfi:barrel-r cjb))
+                  pb  (pfb:yw-pipe-on gb 100.0 746.0 (+ 0.0 (if geo (caddr geo) 2.0)) 745.80 15.0 "RCP III"))
+            (pfb:yw-refresh)
+            (pfb:st "the branch's copy: its inlet"
+                    (and (vl-some '(lambda (tg) (pfb:wc (pfr:get cjb tg) "I.I. 745.80 (15\")")) *pf-tags-inv*) T) T nil)
+            (pfb:st "the through-line's copy shows the branch's pipe too"
+                    (and (vl-some '(lambda (tg) (pfb:wc (pfr:get cja tg) "I.I. 745.80*")) *pf-tags-inv*) T) T nil)
+            (if pb (pfd:erase pb)))
+          (pfl:say "  SKIP  junction rows: the YB copy or grid is gone"))))
+     ;; put the line back
+     (foreach e (list p1 p2 c1 c2 s1 s2) (if (pfb:live e) (pfd:erase e)))
+     (pfb:hush 'pfa:run (list (list a j) nil nil))
+     (pfb:yw-refresh))))
+
+;; --- group 17: the pipe table (pf-mats) ----------------------------------------
+(defun pfb:st-mats ( / t1 m e g)
+  (pfl:say "")
+  (pfl:say "  17. The pipe table (pf-cfg\\pf-pipes.csv)")
+  (pfb:st "CSV: a quoted comma, a doubled quote"
+          (pfl:csv-split "a,\"b,c\",\"d\"\"e\"") '("a" "b,c" "d\"e") nil)
+  (pfb:st "CSV: Excel's byte-order mark dropped" (car (pfl:csv-split "\357\273\277Material,n")) "Material" nil)
+  (setq t1 (pft:parse
+             (list "\357\273\277Material,Nominal,ID,OD,Utilities,Default,n"
+                   "# a note, with commas"
+                   "\"PVC, C900 DR 14\",16,14.91,17.40,WATER,Y,0.010"
+                   "RCP,15,,19.5,Storm; Sanitary,,0.013"
+                   "RCP,18,,23,,,"
+                   "RCP,15,,,,,"
+                   "HDPE,,,,,,"
+                   "BAD,12,12,10,,,")))
+  (setq m (car t1))
+  (pfb:st "columns in any order; a material with a comma in its name"
+          (car (assoc "PVC, C900 DR 14" m)) "PVC, C900 DR 14" nil)
+  (pfb:st "...its sizes: (nominal ID OD)" (nth 4 (assoc "PVC, C900 DR 14" m)) '((16.0 14.91 17.4)) 1e-6)
+  (pfb:st "...Default Y, its utility, n" (list (nth 2 (assoc "PVC, C900 DR 14" m)) (nth 1 (assoc "PVC, C900 DR 14" m))
+                                               (nth 3 (assoc "PVC, C900 DR 14" m)))
+          '(T ("WATER") 0.01) 1e-6)
+  (pfb:st "blank ID = the nominal; utilities split" (list (nth 4 (assoc "RCP" m)) (nth 1 (assoc "RCP" m)))
+          '(((15.0 15.0 19.5) (18.0 18.0 23.0)) ("STORM" "SANITARY")) 1e-6)
+  (pfb:st "a size listed twice -- the first kept, said" (pfb:heard-p "*15\" is listed twice*" (cdr t1)) T nil)
+  (pfb:st "no Nominal -- skipped, said" (pfb:heard-p "*HDPE has no Nominal*" (cdr t1)) T nil)
+  (pfb:st "OD not bigger than ID -- OD dropped (wall unknown), said"
+          (list (nth 4 (assoc "BAD" m)) (pfb:heard-p "*OD 10* is not bigger*" (cdr t1))) '(((12.0 12.0 nil)) T) nil)
+  ;; the real table
+  (cond
+    ((null (pft:mats-all)) (setq n-fail (1+ n-fail)) (pfl:say (strcat "  FAIL  " (car (pft:notes)))))
+    (T
+     (pfb:st "the table beside the lisp reads" (and (pft:mats-all) T) T nil)
+     (pfb:st "RCP III 15\": ID 15, OD 19.5 (ASTM C76 Wall B, seeded)" (pft:dims "RCP III" 15.0) '(15.0 19.5) 1e-6)
+     (pfb:st "...wall 2.25\"" (pft:wall "RCP III" 15.0) 2.25 1e-6)
+     (pfb:st "a size with no OD on record -- wall unknown" (pft:wall "PVC" 15.0) nil nil)
+     (pfb:st "names in any case" (car (pft:mat "rcp iii")) "RCP III" nil)))
+  ;; on a pipe: PFID / PFOD from the table, a typed one kept
+  (setq g (if (pfb:yw 'aya) (pfg:grid (pfb:yw 'aya))))
+  (cond
+    ((null g) (pfl:say "  SKIP  on a pipe: no test grid"))
+    ((null (setq e (pfb:yw-pipe-on g 700.0 744.0 760.0 743.8 15.0 "RCP III"))) nil)
+    ((not (pfr:attr-ent e *pf-pipe-od*))
+     (pfb:st "no PFID / PFOD on the pipe yet -- the table is read instead" (pfp:dims e) '(15.0 19.5) 1e-6)
+     (pfl:say (strcat "  SKIP  the rest: " *pf-pipe-block* " has no " *pf-pipe-od* " -- BEDIT, PFMKPIPEATT, ATTSYNC"))
+     (pfd:erase e))
+    (T
+     (pfb:st "placed -- PFID / PFOD filled from the table" (list (pfr:get e *pf-pipe-id*) (pfr:get e *pf-pipe-od*))
+             '("15.000" "19.500") nil)
+     (pfb:st "...drawn at its INSIDE diameter" (pfl:dynprop-get (vlax-ename->vla-object e) *pf-pipe-dia*)
+             (* 1.25 (pfl:g 'vscale g)) 1e-4)
+     (pfr:put e *pf-pipe-od* "20.000")
+     (pfp:update e g nil)
+     (pfb:st "PFOD typed over -- kept, and read" (cadr (pfp:dims e)) 20.0 1e-6)
+     (pfr:put e *pf-pipe-mat* "NOT IN TABLE")
+     (pfp:update e g nil)
+     (pfb:st "a material not in the table -- PFID blank (the nominal), PFOD as typed"
+             (list (pfr:get e *pf-pipe-id*) (car (pfp:dims e))) '("" 15.0) nil)
+     (foreach l (pfp:leaders e) (pfd:erase l))
+     (pfd:erase e))))
+
+;; --- group 18: the plan label (PFPLABEL) ---------------------------------------
+(defun pfb:st-plabel ( / a j had p def far rot0 ang lpt)
+  (pfl:say "")
+  (pfl:say "  18. The plan label (the name, its height, back after ATTSYNC)")
+  (setq a (car (pfb:yw 'plans)) j (cadr (pfb:yw 'plans)))
+  (cond
+    ((not (pfb:live a)) (pfl:say "  SKIP  no test structures (groups 7-11)"))
+    ((not (pfr:attr-ent a *pf-tag-plan-label*))
+     (pfl:say (strcat "  SKIP  the CBI has no " *pf-tag-plan-label* " -- BEDIT, PFMKPLABEL, BSAVE, ATTSYNC")))
+    (T
+     (setq had (pfv:raw "" "" *pf-setting-kind* "" "PFPLANHT"))
+     (pfb:hush 'pfa:run (list (list a j) nil nil))
+     (pfb:st "PFASSIGN writes the name" (pfr:get a *pf-tag-plan-label*) (pfr:get a *pf-tag-name*) nil)
+     (pfb:st "...at the setting's height" (cdr (assoc 40 (entget (pfr:attr-ent a *pf-tag-plan-label*))))
+             (pfm:plan-label-ht a) 1e-6)
+     (pfv:save "" "" *pf-setting-kind* "" "PFPLANHT" "3.5")
+     (pfb:hush 'pfa:run (list (list a j) nil nil))
+     (pfb:st "a new height setting -- applied" (cdr (assoc 40 (entget (pfr:attr-ent a *pf-tag-plan-label*)))) 3.5 1e-6)
+     (if had (pfv:save "" "" *pf-setting-kind* "" "PFPLANHT" had) (pfv:reset "" "" *pf-setting-kind* "" "PFPLANHT"))
+     ;; dragged, then ATTSYNC (the label back where the definition has it)
+     (setq def (pfr:default-pt a *pf-tag-plan-label*)
+           far (pfb:st-nudge a *pf-tag-plan-label* 6.0 4.0))
+     (pfb:hush 'pfa:run (list (list a j) nil nil))
+     (pfb:st "dragged -- left there" (pfr:att-pt a *pf-tag-plan-label*) far 0.01)
+     (if def
+       (progn
+         (pfr:att-move a *pf-tag-plan-label* def)        ; what ATTSYNC does
+         (pfb:hush 'pfa:run (list (list a j) nil nil))
+         (pfb:st "ATTSYNC put it home -- PFASSIGN puts it back where it was dragged"
+                 (pfr:att-pt a *pf-tag-plan-label*) far 0.01))
+       (pfl:say "  SKIP  ATTSYNC: no attribute definition found"))
+     ;; the rotate grip: swung by the drafter, PFASSIGN leaves the angle alone
+     (if (setq p (pfl:dynprop (vlax-ename->vla-object a) *pf-param-plan-rot*))
+       (progn
+         (setq rot0 (pfl:prop-get p))
+         (pfd:prop-put p (+ rot0 0.5))
+         (setq ang (cdr (assoc 50 (entget (pfr:attr-ent a *pf-tag-plan-label*))))
+               lpt (pfr:att-pt a *pf-tag-plan-label*))
+         (pfb:hush 'pfa:run (list (list a j) nil nil))
+         (pfb:st "the rotate grip swung -- PFASSIGN keeps the angle and the spot"
+                 (list (cdr (assoc 50 (entget (pfr:attr-ent a *pf-tag-plan-label*)))) (pfr:att-pt a *pf-tag-plan-label*))
+                 (list ang lpt) 0.01)
+         (pfd:prop-put p rot0))
+       (pfl:say (strcat "  SKIP  the rotate grip: the CBI has no " *pf-param-plan-rot* " -- PFMKPLABEL adds it")))
+     (pfr:put a *pf-tag-plan-label* "MY LABEL")
+     (pfb:hush 'pfa:run (list (list a j) nil nil))
+     (pfb:st "the label typed over -- kept" (pfr:get a *pf-tag-plan-label*) "MY LABEL" nil))))
+
+;; --- group 19: crossings (PFXLABEL) ----------------------------------------------
+(defun pfb:st-xing ( / l m h c cl ww rec a g gw yw-a yw-pipe ya-pipe x r d lead lv ex dir t1 cmin clr)
+  (pfl:say "")
+  (pfl:say "  19. Crossings (PFXLABEL): finding them, the clearance, the block")
+  ;; pure pieces
+  (setq l (list (cons 'lname "A_1") (cons 'verts '((0.0 0.0 0.0) (100.0 0.0 100.0))) (cons 'box '(0.0 0.0 100.0 0.0)))
+        m (list (cons 'lname "B_1") (cons 'verts '((50.0 -10.0 0.0) (50.0 10.0 20.0))) (cons 'box '(50.0 -10.0 50.0 10.0))))
+  (setq h (car (pfk:hits l m)))
+  (pfb:st "two .cl lines cross -- each one's station there" (list (car h) (cadr h)) '(50.0 10.0) 1e-6)
+  (pfb:st "V5's wording" (list (pfk:words *pf-xing-line-words* "WATER" "A") (pfk:words *pf-xing-sta-words* "WATER" "A"))
+          '("PROP. WATER MAIN 'A'" "PROP. WATER CROSSING") nil)
+  (pfb:st "...a type with no row" (pfk:words *pf-xing-line-words* "REUSE" "R") "PROP. REUSE LINE 'R'" nil)
+  ;; outside to outside: 12" RCP (OD 16) under a 15" RCP (OD 19.5)
+  (setq c (pfk:clear '(742.0 12.0 16.0) '(744.95 15.0 19.5) 18.0 6.0))
+  (pfb:st "below: (its invert - wall) - (crossing invert + ID + wall)"
+          (cadr c) (* 12.0 (- (- 744.95 0.1875) (+ 742.0 1.0 (/ 1.0 6.0))))  1e-6)
+  (pfb:st "...within 6\" of 18\" -- NEAR" (car c) 'near nil)
+  (pfb:st "above, clear" (car (pfk:clear '(750.0 12.0 16.0) '(744.95 15.0 19.5) 18.0 6.0)) 'ok nil)
+  (pfb:st "short of 18\" -- LOW" (car (pfk:clear '(742.3 12.0 16.0) '(744.95 15.0 19.5) 18.0 6.0)) 'low nil)
+  (pfb:st "a wall not known -- UNKNOWN, never a pass" (car (pfk:clear '(742.0 12.0 nil) '(744.95 15.0 19.5) 18.0 6.0))
+          'unknown nil)
+  (pfb:st "the minimum is a setting -- 18\" built in" (pfk:setting "PFCLRMIN" "PFTEST_ZZ") 18.0 1e-6)
+  ;; on the test world, with a block
+  (cond
+    ((null (pfb:yw 'aya)) (pfl:say "  SKIP  the rest: no test world"))
+    ((not (tblsearch "BLOCK" *pf-xing-block*))
+     (pfl:say (strcat "  SKIP  the rest: no " *pf-xing-block* " in this drawing -- insert it once")))
+    (T
+     ;; a WATER line across STORM_YA at YA 4+50, its own grid, a pipe on each
+     (setq ww (pfb:st-cl (strcat (pfb:yw 'dir) "WATER_YW.cl")
+                         (list (list 0.0 (+ *pfb-x0* 350.0) (- *pfb-y0* 100.0))
+                               (list 200.0 (+ *pfb-x0* 350.0) (+ *pfb-y0* 100.0)))))
+     (setq rec (list (cons 'type "WATER") (cons 'name "YW") (cons 'material "TEST MAT")
+                     (cons 'hs 20.0) (cons 'vs 2.0) (cons 'datum 735.0) (cons 'cl ww)
+                     (cons 'll (list (+ *pfb-x0* 2000.0) (+ *pfb-y0* 5000.0)))
+                     (cons 'tr (list (+ *pfb-x0* 2200.0) (+ *pfb-y0* 5300.0))))
+           yw-a (pfn:place-rec rec nil))
+     (cond
+       ((/= (type yw-a) 'ENAME)
+        (setq n-fail (1+ n-fail)) (pfl:say (strcat "  FAIL  anchoring WATER 'YW' -- " (vl-princ-to-string yw-a))))
+       (T
+        (setq made (cons yw-a made)
+              g  (pfg:grid (pfb:yw 'aya))
+              gw (pfg:grid yw-a)
+              ya-pipe (pfb:yw-pipe-on g 420.0 745.00 480.0 744.90 15.0 "RCP III")
+              yw-pipe (pfb:yw-pipe-on gw 60.0 742.05 140.0 741.95 12.0 "RCP III"))
+        (setq r (car (pfb:hush 'pfk:run (list "STORM_YA" (pfg:usable)))))
+        (setq x (car (pfk:on-line "STORM_YA")))
+        (pfb:st "PFXLABEL -- one crossing placed" (car r) 1 nil)
+        (cond
+          ((null x) (setq n-fail (1+ n-fail)) (pfl:say "  FAIL  no crossing block -- the checks on it skipped"))
+          (T
+           (setq made (cons x made) cmin 18.0)
+           (pfb:st "...what it marks: YA 4+50 x WATER_YW 1+00" (pfk:rec x) '("STORM_YA" 450.0 "WATER_YW" 100.0) 0.01)
+           (pfb:st "...at the crossing pipe's invert" (pfb:2d (pfl:ins x))
+                   (list (pfl:sta->x 450.0 g) (pfl:elev->y 742.0 g)) 0.01)
+           (setq clr (cadr (pfk:clear '(742.0 12.0 16.0) '(744.95 15.0 19.5) 18.0 6.0)))
+           (pfb:st "...the clearance, outside to outside" (distof (pfr:get x *pf-xing-clr*) 2) clr 0.02)
+           (pfb:st "...V5's label" (list (pfr:get x *pf-xing-label*) (pfr:get x *pf-xing-label2*))
+                   '("PROP. WATER MAIN 'YW'" "12\" RCP III") nil)
+           (pfb:st "...station text" (pfr:get x *pf-xing-sta*) "4+50.00 PROP. WATER CROSSING" nil)
+           (pfb:st "...near the minimum: dimension, two ticks, the note" (length (pfk:extras-of x (pfk:extras))) 4 nil)
+           (pfb:st "...not red" (cdr (assoc 62 (entget x))) nil nil)
+           (setq lead (pfp:pt-get x *pf-xing-lead*))
+           (if lead
+             (pfb:st "...label on the left by default" (< (car lead) (car (pfl:ins x))) T nil)
+             (pfl:say (strcat "  SKIP  no " *pf-xing-lead* " grip on the block")))
+           ;; the crossing pipe raised: short of the minimum
+           (pfd:move yw-pipe (list (car (pfl:ins yw-pipe)) (+ (cadr (pfl:ins yw-pipe)) (* 0.3 (pfl:g 'vscale gw)))))
+           (setq r (pfb:yw-refresh))
+           (pfb:st "the crossing pipe raised -- PFREFRESH: short, RED" (cdr (assoc 62 (entget x))) 1 nil)
+           (pfb:st "...and the run says so" (pfb:heard-p "*CROSSING(S) NEED A LOOK*" (cdr r)) T nil)
+           (pfb:st "...the dimension red too"
+                   (vl-every '(lambda (e) (= 1 (cdr (assoc 62 (entget e))))) (pfk:extras-of x (pfk:extras))) T nil)
+           ;; dragged away: on a leader
+           (if lead
+             (progn
+               (pfp:pt-put x *pf-xing-lead* (list (+ (car (pfl:ins x)) 30.0) (+ (cadr (pfl:ins x)) 40.0)))
+               (pfb:yw-refresh)
+               (setq ex (pfk:extras-of x (pfk:extras)))
+               (pfb:st "the label dragged away -- kept there, on a leader"
+                       (and (vl-some '(lambda (e) (= "LWPOLYLINE" (cdr (assoc 0 (entget e))))) ex) T) T nil)
+               (setq lv (vl-some '(lambda (e) (if (= "LWPOLYLINE" (cdr (assoc 0 (entget e)))) e)) ex))
+               (if lv
+                 (pfb:st "...its arrow 1 unit off the ellipse, half way up"
+                         (cdr (assoc 10 (entget lv)))
+                         (list (+ (car (pfl:ins x)) 0.5 (* *pf-xing-arrow-off* (/ (pfl:g 'hplot g) *pf-ref-hplot*)))
+                               (+ (cadr (pfl:ins x)) (/ (* 1.0 (pfl:g 'vscale g)) 2.0)))
+                         0.01))))
+           (setq r (pfb:yw-refresh))
+           (pfb:st "refreshed again -- the crossing left alone" (cadr (car r)) 0 nil)
+           ;; the crossing pipe gone: nothing is drawn
+           (pfd:erase yw-pipe)
+           (setq r (pfb:hush 'pfk:run (list "STORM_YA" (pfg:usable))))
+           (pfb:st "no pipe block on the crossing line -- erased, said"
+                   (list (pfk:on-line "STORM_YA") (pfb:heard-p "*no pipe block on WATER_YW*" (cdr r))) '(nil T) nil)))
+        (foreach e (list ya-pipe yw-pipe) (if (pfb:live e) (pfd:erase e)))
+        (foreach c (pfk:extras) (foreach e (cdr c) (pfd:erase e)))
+        (foreach e (pfk:on-line "STORM_YA") (pfd:erase e))
+        (if (pfb:live yw-a) (pfd:erase yw-a))))
+     (pfr:stub-del "WATER" "YW")
+     (if (findfile ww) (vl-file-delete ww)))))
+
+;; --- group 20: the fast reads and the palette's remembered list ---------------
+;;; Jake, 2026-11-20: "the palette is functionally unusable" -- a canceled
+;;; Defaults took a full minute.  The fast reads must give the SAME answers as
+;;; the old ones, on this drawing: each is checked against the old way here.
+;;; The old way is slow, so it is checked on the first *pfb-sp-max* pipes and
+;;; copies only.  The timings are printed for Jake's drawings.
+(setq *pfb-sp-max* 25)
+
+;; the old answers, kept here only to check the new ones against
+(defun pfb:ref-anchor-of (pt / hit)
+  (if (and (setq hit (pfg:nearest pt)) (not (pfg:copy-p (car hit)))) (car hit)))
+(defun pfb:ref-containing (pt / hit a ext)
+  (if (and pt (setq hit (pfg:nearest pt)) (<= (cdr hit) 0.01)
+           (setq a (car hit)) (not (pfg:copy-p a))
+           (setq ext (pfg:extents a)) (car ext) (cadr ext) (pfg:grid a))
+    a))
+
+;; (pfb:first n l) -> the first n of l
+(defun pfb:first (n l / out)
+  (while (and l (> n 0)) (setq out (cons (car l) out) l (cdr l) n (1- n)))
+  (reverse out))
+
+;; (pfb:handles es) -> their handles, sorted
+(defun pfb:handles (es) (acad_strlsort (mapcar 'pfl:handle es)))
+
+;; (pfb:secs t0) -> "0.42s" since t0
+(defun pfb:secs (t0) (strcat (pfl:fix (/ (max 0 (- (getvar "MILLISECS") t0)) 1000.0) 2) "s"))
+
+(defun pfb:st-speed ( / ss i e bad all ref v idx anchors pipes ends t0 tm db r a rim
+                        ya-rows srows before after heard p ins it)
+  (pfl:say "")
+  (pfl:say "  20. Fast reads + the palette's remembered list (same answers as before)")
+  ;; block names: AutoCAD asked only for anonymous ones -- every insert agrees
+  (pfl:effname-forget)
+  (setq bad nil)
+  (if (setq ss (ssget "_X" '((0 . "INSERT"))))
+    (repeat 2                                 ; the 2nd time from memory
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq e (ssname ss i) i (1+ i))
+        (if (not (equal (pfl:effname e) (pfl:effname-com e)))
+          (setq bad (cons (pfl:handle e) bad))))))
+  (pfb:st "block names: every insert's real name, read fast = AutoCAD's" (pfb:first 5 bad) nil nil)
+  ;; pfr:all: the name filter finds what a search of every insert finds
+  (setq ref nil)
+  (if ss
+    (progn
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq e (ssname ss i) i (1+ i))
+        (if (and (pfr:ours-p e) (not (pfr:released-p e))) (setq ref (cons e ref))))))
+  (pfb:st "our structures: the narrowed search finds every one" (pfb:handles (pfr:all nil)) (pfb:handles ref) nil)
+  (setq ref (vl-remove-if-not '(lambda (x) (= (strcase (cond ((pfr:view x)) (""))) (strcase *pf-view-pro*))) ref))
+  (pfb:st "...and every profile copy" (pfb:handles (pfr:all *pf-view-pro*)) (pfb:handles ref) nil)
+  ;; the anchor index: copies, usable grids, which grid a point is in
+  (setq t0 (getvar "MILLISECS") idx (pfg:index) tm (pfb:secs t0) anchors (pfg:all))
+  (pfb:st "anchor index: one entry per anchor, in order" (mapcar 'car idx) anchors nil)
+  (pfb:st "...its copy check = pfg:copy-p"
+          (mapcar '(lambda (x) (nth 5 x)) idx) (mapcar '(lambda (x) (and (pfg:copy-p x) T)) anchors) nil)
+  (pfb:st "...usable grids = the old rule"
+          (mapcar '(lambda (g) (pfl:g 'anchor g)) (pfg:usable))
+          (mapcar '(lambda (g) (pfl:g 'anchor g))
+                  (vl-sort (vl-remove nil (mapcar '(lambda (x / g)
+                                                     (if (and (not (pfg:copy-p x)) (setq g (pfg:grid x)) (pfg:line-name g)) g))
+                                                  anchors))
+                           '(lambda (p q) (< (pfg:title p) (pfg:title q)))))
+          nil)
+  (setq pipes (pfb:first *pfb-sp-max* (pfp:all)) bad nil)
+  (foreach p pipes
+    (if (setq ends (pfp:ends p))
+      (foreach pt ends
+        (if (not (eq (pfg:anchor-containing-in pt idx) (pfb:ref-containing pt)))
+          (setq bad (cons (pfl:handle p) bad))))))
+  (pfb:st (strcat "pipe ends: the grid holding each = the old answer (" (itoa (length pipes)) " pipes)")
+          (pfb:first 5 bad) nil nil)
+  (setq bad nil)
+  (foreach c (pfb:first *pfb-sp-max* (pfs:copies))
+    (if (not (eq (nth 3 c) (pfb:ref-anchor-of (pfl:ins (car c)))))
+      (setq bad (cons (pfl:handle (car c)) bad))))
+  (pfb:st "profile copies: the grid each is in = the old answer" (pfb:first 5 bad) nil nil)
+  (pfl:say (strcat "  INFO  anchors read once: " (itoa (length idx)) " in " tm))
+  ;; the palette's remembered list
+  (cond
+    ((null pfw:read) (pfl:say "  SKIP  the list: pf-palette isn't loaded"))
+    (T
+     (pfw:db-forget)
+     (setq t0 (getvar "MILLISECS") r (pfb:hush 'pfw:db nil) tm (pfb:secs t0) db (car r))
+     (pfb:st "the first click reads the drawing, and says so" (pfb:heard-p "PFPALETTE: drawing read*" (cdr r)) T nil)
+     (pfl:say (strcat "  INFO  the palette's whole-drawing read: " tm "  ("
+                      (itoa (length (cdr (assoc 'lines db)))) " lines, "
+                      (itoa (length (cdr (assoc 'items db)))) " with structures, pipes or crossings)"))
+     (pfb:st "the reactor is watching -- one, no more" (list (pfw:db-watching-p) (length (pfw:db-reactors))) '(T 1) nil)
+     (setq r (pfb:hush 'pfw:db nil))
+     (pfb:st "the next click answers from memory -- no read" (list (eq (car r) db) (pfb:heard-p "*drawing read*" (cdr r)))
+             '(T nil) nil)
+     (pfb:st "what it remembers = a fresh read" (car r) (car (pfb:hush 'pfw:read nil)) nil)
+     (pfb:hush 'pfw:db-watch nil)
+     (pfb:st "watched again -- still one reactor" (length (pfw:db-reactors)) 1 nil)
+     ;; "needs refresh" on every line: what a first pick of each line costs
+     (pfb:hush 'pfw:db nil)
+     (setq t0 (getvar "MILLISECS"))
+     (foreach it (cdr (assoc 'items (pfw:db))) (pfw:run-rows (car it)))
+     (pfl:say (strcat "  INFO  the \"needs refresh\" check, every line: " (pfb:secs t0)
+                      "  (the first pick of one line pays its share)"))
+     ;; on the test world: YA's rows, then changes PFREFRESH would act on
+     (setq a (car (pfb:yw 'plans)))
+     (cond
+       ((not (pfb:live a)) (pfl:say "  SKIP  the change checks: no test structures"))
+       (T
+        (setq ya-rows (vl-remove-if-not '(lambda (x) (eq (car x) 'structure)) (pfw:run-rows "STORM_YA"))
+              srows   (pfw:struct-rows "STORM_YA"))
+        (pfb:st "YA's list: its structures, as the one-line read has them"
+                (mapcar '(lambda (x) (list (nth 2 x) (nth 3 x))) ya-rows)
+                (mapcar '(lambda (x) (list (cadr x) (caddr x))) srows) nil)
+        ;; up to date first, then nothing on YA may say "needs refresh" -- a
+        ;; block that still does is one PFREFRESH would rewrite every run
+        (pfb:sp-refresh)
+        (pfw:db-forget)
+        (pfb:st "after Refresh Line -- nothing on YA needs refresh"
+                (mapcar '(lambda (x) (nth 2 x))
+                        (vl-remove-if-not '(lambda (x) (= (nth 5 x) "needs refresh")) (pfw:run-rows "STORM_YA")))
+                nil nil)
+        (setq rim (pfr:get a *pf-tag-rim*))
+        (pfr:put a *pf-tag-rim* "")
+        (pfl:say (strcat "  INFO  a change emptied the list straight away (the reactor): "
+                         (if *pfw-db* "no -- AutoCAD runs it after this command" "yes")))
+        (pfw:db-forget)
+        (pfb:st "a rim cleared -- needs refresh" (pfb:sp-status a "STORM_YA") "needs refresh" nil)
+        (pfr:put a *pf-tag-rim* rim)
+        (pfw:db-forget)
+        (pfb:st "...the rim put back as it was -- up to date again" (pfb:sp-status a "STORM_YA") "placed" nil)
+        (if (pfl:number-p rim)
+          (progn
+            (pfr:put a *pf-tag-rim* (pfl:fix (+ 2.0 (distof rim 2)) 2))
+            (pfw:db-forget)
+            (pfb:st "a rim changed -- needs refresh" (pfb:sp-status a "STORM_YA") "needs refresh" nil)
+            (pfb:sp-refresh)
+            (pfw:db-forget)
+            (pfb:st "...Refresh Line -- placed" (pfb:sp-status a "STORM_YA") "placed" nil)
+            (pfr:put a *pf-tag-rim* rim)
+            (pfb:sp-refresh)))
+        ;; a pipe moved
+        (setq p (car (car (pfw:pipe-rows "STORM_YA"))))
+        (if (not (pfb:live p))
+          (pfl:say "  SKIP  the pipe check: no test pipe on YA")
+          (progn
+            (setq ins (pfl:ins p))
+            (pfd:move p (list (car ins) (+ (cadr ins) 0.5)))
+            (pfw:db-forget)
+            (pfb:st "a pipe moved -- needs refresh" (pfb:sp-status p "STORM_YA") "needs refresh" nil)
+            (pfb:sp-refresh)
+            (pfw:db-forget)
+            (pfb:st "...Refresh Line -- not any more" (/= (pfb:sp-status p "STORM_YA") "needs refresh") T nil)
+            (pfd:move p ins)
+            (pfb:sp-refresh)))
+        (pfw:db-forget))))))
+
+;; (pfb:sp-refresh) -> PFREFRESH on the test lines AS THE COMMAND RUNS IT --
+;;   each block's saved defaults (fmt / pin nil).  pfb:yw-refresh hands in
+;;   the bench's own inputs, which stamp a different fingerprint than the
+;;   palette's "needs refresh" test (and Refresh Line) reads.
+(defun pfb:sp-refresh () (pfb:hush 'pfu:run (list (cons "Line" *pfb-lines*) nil nil)))
+
+;; (pfb:sp-status e lname) -> e's status in the palette's Run list for lname
+(defun pfb:sp-status (e lname)
+  (nth 5 (vl-some '(lambda (x) (if (eq (cadr x) e) x)) (pfw:run-rows lname))))
 
 ;; (c:PFSELFTEST) -- run every group, clean up, total
 (defun c:PFSELFTEST ( / n-pass n-fail made doc cbi pipe-g t0 yw r)
@@ -2699,8 +3898,19 @@
          (pfb:st-run "PFSTRUCT"  'pfb:st-struct)
          (pfb:st-run "PFREFRESH" 'pfb:st-refresh)
          (pfb:st-run "PFPIPE"    'pfb:st-pipes)
+         ;; 2026-11-20 -- faces and inverts need the YB junction, so before
+         ;; group 11 takes YB's grid away
+         (pfb:st-run "faces"       'pfb:st-faces)
+         (pfb:st-run "inverts"     'pfb:st-inverts)
          (pfb:st-run "PFREMOVE"  'pfb:st-remove)
-         (pfb:st-run "palette"   'pfb:st-palette)))
+         (pfb:st-run "palette"   'pfb:st-palette)
+         (pfb:st-run "plan label"  'pfb:st-plabel)
+         (pfb:st-run "crossings"   'pfb:st-xing)
+         (pfb:st-run "fast reads"  'pfb:st-speed)))
+     (pfb:st-run "pipe table" 'pfb:st-mats)
+     ;; 13 needs no test world; 14 runs its name checks without one
+     (pfb:st-run "saved defaults" 'pfb:st-defaults)
+     (pfb:st-run "headwall / sanitary" 'pfb:st-blocks)
      ;; clean up -- the test lines' blocks, stubs and files; everything this
      ;; run made; any leader a test pipe still has (a group that stopped
      ;; part-way may leave one)
@@ -2719,5 +3929,249 @@
   (princ))
 
 
-(prompt "\npf-bench loaded (workbench, not a module).  PFMKATT / PFSEL / PFGATE / PFSWAP / PFRECTEST / PFSYNCTEST / PFPIPETEST / PFGRIDTEST / PFLINETEST / PFSELFTEST / PFMKANCATT.")
+;;; ==========================================================================
+;;; SECTION 12  --  PFTESTNET / PFTESTEDIT: the Pro-Flow importer's test network (2026-11-13)
+;;; ==========================================================================
+;;; Two exports of one small drawing for the Pro-Flow importer's test: one
+;;; before and one after a set of edits.  Run in a COPY of V6_Test with only
+;;; the STORM_FB system left (FB, FD, FE and FF grids; inlets FB-2 .. FB-6,
+;;; FD-2, FE-2, FF-2).
+;;;
+;;;   PFTESTNET   draws the 9 pipes and types the rims.  Then: PFASSIGN (No to
+;;;               TIN rims), PFREFRESH, PFEXPORT -> export 1.
+;;;   PFTESTEDIT  makes the six edits.  Then: PFASSIGN (No to TIN rims),
+;;;               PFREFRESH, PFEXPORT -> export 2.
+;;;
+;;; Structures are found by their STATION on a line, not by name: PFASSIGN may
+;;; renumber the line (headwalls not built yet), the stations don't move.
+;;; Pipes are found again by their end stations and inverts.  Every number
+;;; here is made up to sit on those grids -- not design.
+
+;; every inlet a pipe ends on: (line station).  The junctions appear once per
+;;   line (FB 674.56 = FD 400.00, FB 871.79 = FE 500.00, FB 1136.22 = FF 600.00).
+(setq *pfb-tn-structs*
+  '(("STORM_FB"  483.17) ("STORM_FB"  674.56) ("STORM_FB"  776.22)
+    ("STORM_FB"  871.79) ("STORM_FB" 1136.22)
+    ("STORM_FD"  400.00) ("STORM_FD"  422.08)
+    ("STORM_FE"  500.00) ("STORM_FE"  523.83)
+    ("STORM_FF"  600.00) ("STORM_FF"  630.21)))
+
+;; rims typed as a drafter would (no SRC -> exported ASSERTED).  FB 776.22
+;;   (FB-4) is left blank on purpose.
+(setq *pfb-tn-rims*
+  '(("STORM_FB"  483.17 "744.00") ("STORM_FB"  674.56 "745.20")
+    ("STORM_FB"  871.79 "746.10") ("STORM_FB" 1136.22 "747.50")
+    ("STORM_FD"  422.08 "745.80") ("STORM_FE"  523.83 "746.60")
+    ("STORM_FF"  630.21 "748.00")))
+
+;; pipes: (tag line upstream up-invert downstream dn-invert size material)
+;;   an end is (S sta) = the inlet at that station on this line, or
+;;   (P sta) = a plain station, nothing there.  size nil = PFSIZE left blank.
+(setq *pfb-tn-pipes*
+  '(("P1" "STORM_FB" (S  674.56) 736.40 (S  483.17) 735.00 24 "RCP III")  ; through the bend; FB-2 = outfall
+    ("P2" "STORM_FB" (S  776.22) 737.00 (S  674.56) 736.50 24 "RCP III")
+    ("P3" "STORM_FB" (S  871.79) 737.50 (S  776.22) 737.50 18 "RCP III")  ; flat
+    ("P4" "STORM_FB" (S 1136.22) 739.00 (S  871.79) 737.70 18 "HDPE")
+    ("P5" "STORM_FD" (S  422.08) 737.30 (S  400.00) 737.00 15 "RCP III")  ; 2nd pipe into FB-3/FD-1
+    ("P6" "STORM_FE" (S  523.83) 738.60 (S  500.00) 739.00 12 "HDPE")     ; uphill
+    ("P7" "STORM_FF" (S  630.21) 742.80 (S  600.00) 742.30 nil "PVC")     ; PFSIZE blank
+    ("P8" "STORM_FD" (P  450.00) 738.00 (S  422.08) 737.50 12 "PVC")      ; open upstream end
+    ("P9" "STORM_FB" (P 1250.00) 740.50 (P 1210.00) 740.20 12 "RCP IV"))) ; loose
+
+;; (pfb:tn-grid lname) -> that line's usable grid | nil
+(defun pfb:tn-grid (lname)
+  (vl-some '(lambda (g) (if (= (strcase (pfg:line-name g)) lname) g)) (pfg:usable)))
+
+;; (pfb:tn-at lname sta) -> (plan-ename . its station on lname) | nil
+;;   the plan structure whose MEMB puts it within a foot of sta on lname
+(defun pfb:tn-at (lname sta / hit m)
+  (foreach e (pfr:all *pf-view-plan*)
+    (if (and (null hit)
+             (setq m (assoc lname (pfr:memb-get e)))
+             (< (abs (- (cadr m) sta)) 1.0))
+      (setq hit (cons e (cadr m)))))
+  hit)
+
+;; (pfb:tn-who e) -> the structure's name as it reads now
+(defun pfb:tn-who (e / n)
+  (if (and (setq n (pfr:get e *pf-tag-name*)) (/= n "")) n (strcat "<" (pfl:handle e) ">")))
+
+;; (pfb:tn-end lname end) -> (station . "what is there") | why not, a string
+(defun pfb:tn-end (lname end / hit)
+  (cond
+    ((eq (car end) 'P) (cons (cadr end) "open end"))
+    ((setq hit (pfb:tn-at lname (cadr end))) (cons (cdr hit) (pfb:tn-who (car hit))))
+    (T (strcat "no inlet on " lname " near STA " (rtos (cadr end) 2 2)))))
+
+;; (pfb:tn-pipe-at g s1 z1 s2 z2) -> the pipe on grid g with these ends | nil
+(defun pfb:tn-pipe-at (g s1 z1 s2 z2 / hit ends a b)
+  (foreach e (pfp:all)
+    (if (and (null hit) (setq ends (pfp:ends e)))
+      (progn
+        (setq a (car ends) b (cadr ends))
+        (if (and (equal (pfl:x->sta (car a) g) s1 0.05) (equal (pfl:y->elev (cadr a) g) z1 0.05)
+                 (equal (pfl:x->sta (car b) g) s2 0.05) (equal (pfl:y->elev (cadr b) g) z2 0.05))
+          (setq hit e)))))
+  hit)
+
+;; (pfb:tn-our-pipes) -> pipes already on the FB / FD / FE / FF grids
+(defun pfb:tn-our-pipes ( / ours a out)
+  (setq ours (mapcar '(lambda (l) (if (setq a (pfb:tn-grid l)) (pfl:g 'anchor a)))
+                     '("STORM_FB" "STORM_FD" "STORM_FE" "STORM_FF")))
+  (foreach e (pfp:all)
+    (if (and (pfp:ends e) (member (pfg:anchor-of (pfp:mid (pfp:ends e))) ours))
+      (setq out (cons e out))))
+  out)
+
+;; (pfb:tn-place lname s1 z1 s2 z2 size mat) -> the pipe | why not, a string
+(defun pfb:tn-place (lname s1 z1 s2 z2 size mat / g r)
+  (setq g (pfb:tn-grid lname)
+        r (pfp:place (list (pfl:sta->x s1 g) (pfl:elev->y z1 g))
+                     (list (pfl:sta->x s2 g) (pfl:elev->y z2 g))
+                     g (cond (size) (12)) mat T))
+  (cond
+    ((= (type r) 'STR) r)
+    (T
+     (if (null size) (pfr:put (car r) *pf-pipe-size* ""))
+     (car r))))
+
+(defun pfb:tn-net ( / why rows r s1 s2 e n)
+  (pfl:say "")
+  (pfl:say "=== PFTESTNET  the importer's test network: 9 pipes + rims ===")
+  ;; everything checked before anything is drawn
+  (setq why
+    (cond
+      ((not (tblsearch "BLOCK" *pf-pipe-block*)) (strcat "no " *pf-pipe-block* " block in this drawing"))
+      ((null (pfp:sizes)) "the pipe table (pf-cfg\\pf-pipes.csv) has no sizes")
+      ((vl-some '(lambda (l) (if (null (pfb:tn-grid l)) (strcat "no usable grid for " l)))
+                '("STORM_FB" "STORM_FD" "STORM_FE" "STORM_FF")))
+      ((vl-some '(lambda (s) (if (null (pfb:tn-at (car s) (cadr s)))
+                               (strcat "no inlet on " (car s) " near STA " (rtos (cadr s) 2 2)
+                                       " -- has PFASSIGN run?")))
+                *pfb-tn-structs*))
+      ((vl-some '(lambda (p / g)
+                   (setq g (pfb:tn-grid (nth 1 p)))
+                   (vl-some '(lambda (end)
+                               (if (not (pfg:on-grid-p (cadr end) g))
+                                 (strcat (car p) ": STA " (rtos (cadr end) 2 2) " is off the " (nth 1 p) " grid")))
+                            (list (nth 2 p) (nth 4 p))))
+                *pfb-tn-pipes*))
+      ((> (setq n (length (pfb:tn-our-pipes))) 0)
+       (strcat (itoa n) " pipe(s) already on these grids -- run it once only (UNDO, or erase them)"))))
+  (cond
+    (why (pfl:say (strcat "PFTESTNET: " why ".  Nothing drawn.")))
+    (T
+     (setq *pfd-stage* "placing the pipes")
+     (foreach p *pfb-tn-pipes*
+       (setq s1 (pfb:tn-end (nth 1 p) (nth 2 p))
+             s2 (pfb:tn-end (nth 1 p) (nth 4 p))
+             r  (pfb:tn-place (nth 1 p) (car s1) (nth 3 p) (car s2) (nth 5 p) (nth 6 p) (nth 7 p)))
+       (pfl:say
+         (strcat "  " (car p) "  "
+                 (if (= (type r) 'STR)
+                   (strcat "FAILED: " r)
+                   (strcat (pfl:handle r) "  " (nth 1 p) "  "
+                           (cdr s1) " " (rtos (nth 3 p) 2 2) " -> "
+                           (cdr s2) " " (rtos (nth 5 p) 2 2) "  "
+                           (if (nth 6 p) (strcat (itoa (nth 6 p)) "\"") "SIZE BLANK") " "
+                           (nth 7 p))))))
+     (setq *pfd-stage* "typing the rims")
+     (foreach rm *pfb-tn-rims*
+       (setq e (car (pfb:tn-at (car rm) (cadr rm))))
+       (pfr:put e *pf-tag-rim* (caddr rm))
+       (pfl:say (strcat "  rim  " (pfb:tn-who e) "  " (caddr rm))))
+     (pfl:say (strcat "  rim  " (pfb:tn-who (car (pfb:tn-at "STORM_FB" 776.22))) "  left BLANK"))
+     (pfl:say "")
+     (pfl:say "  Next: PFASSIGN (answer No to rims from the TIN), PFREFRESH, PFEXPORT.")
+     (pfl:say "  One UNDO takes this whole run back.")))
+  (princ))
+
+;; (pfb:tn-new-cbi lname sta like) -> a new plan CBI on lname at sta, turned
+;;   and layered like the inlet `like' | nil
+(defun pfb:tn-new-cbi (lname sta like / g cl pt e)
+  (if (and (setq g (pfb:tn-grid lname))
+           (setq cl (pfg:cl g))
+           (setq pt (pfc:cl-point cl sta))
+           (setq e (pfd:insert (cadr (assoc 'CBI *pf-blocks*)) pt)))
+    (progn
+      (vla-put-rotation (vlax-ename->vla-object e) (cdr (assoc 50 (entget like))))
+      (vla-put-layer (vlax-ename->vla-object e) (cdr (assoc 8 (entget like))))
+      e)))
+
+(defun pfb:tn-edit ( / why gfb gfe p2 p4 p7 fe2 fd2 b5 ends lp r e inputs n)
+  (pfl:say "")
+  (pfl:say "=== PFTESTEDIT  the six edits for export 2 ===")
+  (pfc:load)
+  (setq gfb (pfb:tn-grid "STORM_FB") gfe (pfb:tn-grid "STORM_FE"))
+  (setq why
+    (cond
+      ((not (pfc:ready-p)) "Carlson isn't loaded")
+      ((not (and gfb gfe (pfb:tn-grid "STORM_FD") (pfb:tn-grid "STORM_FF"))) "the FB / FD / FE / FF grids aren't all here")
+      ((null (setq p2 (pfb:tn-pipe-at gfb 776.22 737.00 674.56 736.50))) "can't find P2 as PFTESTNET drew it")
+      ((null (setq p4 (pfb:tn-pipe-at gfb 1136.22 739.00 871.79 737.70))) "can't find P4 as PFTESTNET drew it")
+      ((null (setq p7 (pfb:tn-pipe-at (pfb:tn-grid "STORM_FF") 630.21 742.80 600.00 742.30)))
+       "can't find P7 as PFTESTNET drew it (already deleted?)")
+      ((null (setq b5 (car (pfb:tn-at "STORM_FB" 871.79)))) "can't find FB-5/FE-1")
+      ((null (setq fe2 (car (pfb:tn-at "STORM_FE" 523.83)))) "can't find FE-2")
+      ((null (setq fd2 (car (pfb:tn-at "STORM_FD" 422.08)))) "can't find FD-2")
+      ((pfb:tn-at "STORM_FE" 550.00) "there is already an inlet at FE 5+50 -- run it once only")
+      ((pfb:tn-at "STORM_FD" 450.00) "there is already an inlet at FD 4+50 -- run it once only")
+      ((not (pfg:on-grid-p 550.00 gfe)) "FE 5+50 is off the STORM_FE grid")
+      ((not (and (pfg:cl gfe) (pfc:cl-point (pfg:cl gfe) 550.00))) "can't find FE 5+50 on Storm_FE.cl")
+      ((not (and (pfg:cl (pfb:tn-grid "STORM_FD")) (pfc:cl-point (pfg:cl (pfb:tn-grid "STORM_FD")) 450.00)))
+       "can't find FD 4+50 on Storm_FD.cl")))
+  (cond
+    (why (pfl:say (strcat "PFTESTEDIT: " why ".  Nothing changed.")))
+    (T
+     (setq inputs (car (pfp:sync)))
+     ;; 1  a pipe size
+     (setq *pfd-stage* "1, P4's size")
+     (pfr:put p4 *pf-pipe-size* "24\"")
+     (pfp:update p4 gfb inputs)
+     (pfl:say (strcat "  1  P4 " (pfl:handle p4) "  size 18\" -> 24\""))
+     ;; 2  an invert: P2's downstream end down 0.50
+     (setq *pfd-stage* "2, P2's downstream invert")
+     (setq ends (pfp:ends p2)
+           lp   (pfp:to-local p2 (list (car (cadr ends)) (pfl:elev->y 736.00 gfb))))
+     (pfd:dynprop-put (vlax-ename->vla-object p2) *pf-pipe-run-x* (car lp))
+     (pfd:dynprop-put (vlax-ename->vla-object p2) *pf-pipe-run-y* (cadr lp))
+     (pfp:update p2 gfb inputs)
+     (pfl:say (strcat "  2  P2 " (pfl:handle p2) "  downstream invert 736.50 -> "
+                      (rtos (pfl:y->elev (cadr (cadr (pfp:ends p2))) gfb) 2 2)))
+     ;; 3  a rim
+     (setq *pfd-stage* "3, a rim")
+     (pfr:put b5 *pf-tag-rim* "746.60")
+     (pfl:say (strcat "  3  " (pfb:tn-who b5) "  rim 746.10 -> 746.60"))
+     ;; 4  a new inlet and pipe: FE 5+50 -> FE-2
+     (setq *pfd-stage* "4, the new inlet and pipe")
+     (cond
+       ((null (setq e (pfb:tn-new-cbi "STORM_FE" 550.00 fe2)))
+        (pfl:say "  4  FAILED: no CBI placed at FE 5+50 (off the .cl?)"))
+       (T
+        (pfr:put e *pf-tag-rim* "747.00")
+        (setq r (pfb:tn-place "STORM_FE" 550.00 739.40 (cdr (pfb:tn-at "STORM_FE" 523.83)) 739.00 12 "HDPE"))
+        (pfl:say (strcat "  4  new CBI " (pfl:handle e) " at FE 5+50, rim 747.00;  new pipe "
+                         (if (= (type r) 'STR) (strcat "FAILED: " r)
+                           (strcat (pfl:handle r) "  739.40 -> " (pfb:tn-who fe2) " 739.00  12\" HDPE"))))))
+     ;; 5  a pipe deleted, with its leader
+     (setq *pfd-stage* "5, deleting P7")
+     (setq n (pfl:handle p7))
+     (foreach l (pfp:leaders p7) (pfd:erase l))
+     (pfd:erase p7)
+     (pfl:say (strcat "  5  P7 " n "  deleted"))
+     ;; 6  the missing inlet, where P8's open end is
+     (setq *pfd-stage* "6, the placeholder's inlet")
+     (if (setq e (pfb:tn-new-cbi "STORM_FD" 450.00 fd2))
+       (pfl:say (strcat "  6  new CBI " (pfl:handle e) " at FD 4+50 (P8's open end), rim left blank"))
+       (pfl:say "  6  FAILED: no CBI placed at FD 4+50 (off the .cl?)"))
+     (pfl:say "")
+     (pfl:say "  Next: PFASSIGN (answer No to rims from the TIN), PFREFRESH, PFEXPORT.")
+     (pfl:say "  One UNDO takes this whole run back.")))
+  (princ))
+
+(defun c:PFTESTNET  () (pfd:run "PFTESTNET"  'pfb:tn-net)  (princ))
+(defun c:PFTESTEDIT () (pfd:run "PFTESTEDIT" 'pfb:tn-edit) (princ))
+
+
+(prompt "\npf-bench loaded (workbench, not a module).  PFMKATT / PFSEL / PFGATE / PFSWAP / PFRECTEST / PFSYNCTEST / PFPIPETEST / PFGRIDTEST / PFLINETEST / PFSELFTEST / PFMKANCATT / PFTESTNET / PFTESTEDIT.")
 (princ)

@@ -29,3 +29,7 @@ one wrapper every command runs inside.
 - **Every command body runs inside `pfd:run`.**
 - **The tool never sets PFDEPTH.** The barrel depth is the drafter's, set with the grip (Jake, 2026-10-15).
 - **Reading dynamic properties is pf-lib's,** not this file's.
+
+## Added 2026-11-20
+
+- `pfd:line`, `pfd:text`, `pfd:dim-vert` (a vertical dimension with its text replaced, current dimension style), `pfd:color` -- for what PFXLABEL draws.

@@ -12,9 +12,10 @@
 ;;;   - structures  every PLAN alpha block: insert point, rotation, record
 ;;;                 attributes, rim and its SRC, MEMB
 ;;;   - pipes     every PFSUITE_PIPE: both ends in SHEET coordinates, the
-;;;               grid it is drawn on, size, material, wall
-;;;   - materials Carlson's pipen.dta (n, name), offered to Pro-Flow as a
-;;;               suggestion only
+;;;               grid it is drawn on, size, material, wall (from the block's
+;;;               PFID / PFOD, 2026-11-20)
+;;;   - materials the pipe table, pf-cfg\pf-pipes.csv (n, name), offered to
+;;;               Pro-Flow as a suggestion only (was Carlson's pipen.dta)
 ;;; Nothing is resolved here: Pro-Flow links pipe ends to structures and
 ;;; reports what it cannot link.  Problems found here go in "diagnostics".
 ;;;
@@ -25,7 +26,7 @@
 
 (setq *pfx-format* "pfsuite-network")
 (setq *pfx-version* 1)
-(setq *pfx-exporter-version* 2)
+(setq *pfx-exporter-version* 3)
 
 
 ;;; ---- JSON text -------------------------------------------------------------
@@ -98,12 +99,16 @@
 (setq *pfx-diags* nil)
 
 (defun pfx:diag (level code ref msg)
+  (if (= level "error") (setq *pfx-errors* (1+ *pfx-errors*)))
   (setq *pfx-diags*
     (cons (pfx:obj (list (cons "level" (pfx:str level))
                          (cons "code" (pfx:str code))
                          (cons "ref" (pfx:str ref))
                          (cons "message" (pfx:str msg))))
           *pfx-diags*)))
+
+(defun pfx:storm-line-p (name)
+  (and (= (type name) 'STR) (wcmatch (strcase name) "STORM_*")))
 
 ;; A shared plan structure's MEMB entries join its lines.  Only those recorded
 ;; junctions expand the selection; lines crossing on the sheet do not.
@@ -123,7 +128,7 @@
     (foreach memb memberships
       (if (pfx:member-on-lines memb lines)
         (foreach m memb
-          (if (and (car m) (/= (car m) "")
+          (if (and (pfx:storm-line-p (car m))
                    (not (member (setq name (strcase (car m))) lines)))
             (setq lines (cons name lines)
                   changed T))))))
@@ -144,6 +149,9 @@
          (pfl:say "PFEXPORT: this anchor has no usable grid settings."))
         ((null (pfg:line-name g))
          (pfl:say "PFEXPORT: this anchor has no .cl line name."))
+        ((not (and (= (strcase (pfl:g 'util g)) "STORM")
+                   (pfx:storm-line-p (pfg:line-name g))))
+         (pfl:say "PFEXPORT: Pro-Flow accepts storm sewer networks; select a STORM grid."))
         (T (pfg:line-name g))))))
 
 ;; Every usable grid (pfg:usable already drops copies and unreadable anchors).
@@ -203,16 +211,18 @@
   (reverse out))
 
 ;; The rim and where it came from.  An empty PFRIM is NONE, never zero.
-(defun pfx:rim (e rec / txt v src)
+(defun pfx:rim (e rec / txt v src entry)
   (setq txt (pfr:val rec *pf-tag-rim*)
         v   (if (and txt (/= (vl-string-trim " " txt) "")) (distof txt 2))
-        src (pfr:src-get e *pf-tag-rim*))
+        entry (pfr:src-entry e *pf-tag-rim*)
+        src (if entry (cadr entry)))
   (cond
     ((null v)
      (pfx:obj (list (cons "value" "null") (cons "source" (pfx:str *pf-src-none*)))))
     (T
      ;; A rim typed by hand has no SRC entry, or one that no longer matches.
-     (if (or (null src) (pfr:asserted-p e *pf-tag-rim*))
+     (if (or (null src) (= src *pf-src-asserted*)
+             (/= txt (caddr entry)))
        (setq src *pf-src-asserted*))
      (pfx:obj (list (cons "value" (pfx:num v)) (cons "source" (pfx:str src)))))))
 
@@ -249,28 +259,34 @@
         out))))
   (reverse out))
 
-(defun pfx:pipes (lines / out ends anchor grid lname size wall)
+(defun pfx:pipes (lines / out ends a b anchor grid lname size wall issue)
   (foreach e (pfp:all)
     (setq ends   (pfp:ends e)
-          anchor (pfg:anchor-of (if ends (pfp:mid ends) (pfl:ins e)))
+          a      (pfg:anchor-of (if ends (car ends) (pfl:ins e)))
+          b      (if ends (pfg:anchor-of (cadr ends)))
+          anchor (if ends (pfg:anchor-containing (car ends)))
           grid   (if anchor (pfg:grid anchor))
-          lname  (if grid (pfg:line-name grid)))
-    (if (member lname lines)
+          lname  (if grid (pfg:line-name grid))
+          issue  (pfp:grid-issue ends nil))
+    (if (or (member lname lines)
+            (and a (pfg:grid a) (member (pfg:line-name (pfg:grid a)) lines))
+            (and b (pfg:grid b) (member (pfg:line-name (pfg:grid b)) lines)))
       (cond
-        ((null ends)
-         (pfx:diag "warning" "pipe_unreadable" (pfl:handle e)
-                   "cannot read the pipe's run grip; not exported"))
+        (issue
+         (pfx:diag "error" "pipe_grid_invalid" (pfl:handle e)
+                   (strcat issue "; export refused so reimport cannot mistake it for a deleted pipe")))
         (T
        (setq
              size   (pfp:size e)
-             wall   (if size (pfp:wall size)))
+             wall   (if (and size (cadr (pfp:dims e)))
+                      (/ (- (cadr (pfp:dims e)) (car (pfp:dims e))) 2.0)))
        (if (null size)
          (pfx:diag "error" "pipe_no_size" (pfl:handle e) "PFSIZE is blank"))
        (setq out
          (cons
            (pfx:obj
              (list (cons "id"   (pfx:str (pfl:handle e)))
-                   (cons "grid" (pfx:str (if anchor (pfl:handle anchor) "")))
+                    (cons "grid" (pfx:str (pfl:handle anchor)))
                    (cons "upstream"
                          (pfx:obj (list (cons "sheet"
                            (pfx:obj (list (cons "x" (pfx:num (car (car ends))))
@@ -285,17 +301,15 @@
            out))))))
   (reverse out))
 
-;; Carlson's pipen.dta: "n, Material, typecode" per line.
-(defun pfx:materials ( / d f out)
-  (if (setq d (pfp:userdir))
-    (foreach l (pfl:readlines (strcat d "\\" *pf-lib-pipen*))
-      (setq f (pfl:split l))
-      (if (and (>= (length f) 2) (numberp (distof (car f))) (> (distof (car f)) 0.0))
-        (setq out
-          (cons (pfx:obj (list (cons "name" (pfx:str (cadr f)))
-                               (cons "n" (pfx:num (distof (car f))))
-                               (cons "source" (pfx:str *pf-lib-pipen*))))
-                out)))))
+;; The pipe table's materials that carry an n (pf-mats).
+(defun pfx:materials ( / out)
+  (foreach m (pft:mats-all)
+    (if (and (nth 3 m) (> (nth 3 m) 0.0))
+      (setq out
+        (cons (pfx:obj (list (cons "name" (pfx:str (car m)))
+                             (cons "n" (pfx:num (nth 3 m)))
+                             (cons "source" (pfx:str *pf-pipe-table*))))
+              out))))
   (reverse out))
 
 (defun pfx:now ( / d)
@@ -307,8 +321,52 @@
 
 ;;; ---- the command -------------------------------------------------------------
 
-(defun pfx:main ( / seed connected path f grids lines structs pipes mats doc)
-  (setq *pfx-diags* nil)
+;; Stage a complete UTF-8 file beside the destination.  Keep the prior export
+;; as a backup after the user explicitly agrees to replace it.
+(defun pfx:write-file (path doc / tmp backup f old n)
+  (setq old (findfile path)
+        n 0
+        tmp (strcat path ".tmp-" (itoa (getvar "MILLISECS"))))
+  (while (findfile tmp)
+    (setq n (1+ n) tmp (strcat path ".tmp-" (itoa (getvar "MILLISECS")) "-" (itoa n))))
+  (if old
+    (progn
+      (initget "Yes No")
+      (if (/= "Yes" (getkword (strcat "\nReplace existing " path "? [Yes/No] <No>: ")))
+        (setq path nil))))
+  (if path
+    (progn
+      (setq f (open tmp "w" "utf8"))
+      (cond
+        ((null f) (pfl:say (strcat "PFEXPORT: cannot stage " tmp)) nil)
+        (T
+         (write-line doc f)
+         (close f)
+         (cond
+           ((or (null (vl-file-size tmp)) (< (vl-file-size tmp) (strlen doc)))
+            (pfl:say (strcat "PFEXPORT: staged file is incomplete: " tmp)) nil)
+           (T
+            (if old
+              (progn
+                (setq n 0 backup (strcat path ".backup-" (itoa (getvar "MILLISECS"))))
+                (while (findfile backup)
+                  (setq n (1+ n) backup (strcat path ".backup-" (itoa (getvar "MILLISECS")) "-" (itoa n))))
+                (if (not (vl-file-rename path backup))
+                  (progn
+                    (pfl:say "PFEXPORT: could not back up the old export; destination unchanged.")
+                    (setq path nil)))))
+            (if path
+              (if (vl-file-rename tmp path)
+                (progn
+                  (if backup (pfl:say (strcat "  Previous export kept at " backup)))
+                  T)
+                (progn
+                  (if backup (vl-file-rename backup path))
+                  (pfl:say (strcat "PFEXPORT: could not install staged file: " tmp))
+                  nil))))))))))
+
+(defun pfx:main ( / seed connected path grids lines structs pipes mats doc)
+  (setq *pfx-diags* nil *pfx-errors* 0)
   (cond
     ((and *pf-metric-refuse* (pfc:metric-p))
      (pfl:say "PFEXPORT: metric drawing -- refused (the exchange is in feet)."))
@@ -324,16 +382,21 @@
            path    (strcat (getvar "DWGPREFIX")
                            (vl-filename-base (getvar "DWGNAME"))
                            "." seed ".pfnet"))
-     (if (null pipes)
-       (pfl:say "PFEXPORT: no PFSUITE pipes on these lines; nothing written.")
-       (progn
+      (cond
+        ((> *pfx-errors* 0)
+         (pfl:say (strcat "PFEXPORT: " (itoa *pfx-errors*) " grid/pipe error(s); nothing written.")))
+        ((null pipes)
+         (pfl:say "PFEXPORT: no PFSUITE pipes on these lines; nothing written."))
+        ((null (setq path (getfiled "Export Pro-Flow storm network" path "pfnet" 33)))
+         (pfl:say "PFEXPORT: canceled; nothing written."))
+        (T
      (setq doc
        (strcat
          "{\n"
          "  \"format\": " (pfx:str *pfx-format*) ",\n"
          "  \"format_version\": " (itoa *pfx-version*) ",\n"
          "  \"snapshot\": "
-         (pfx:str "partial") ",\n"
+         (pfx:str "lines") ",\n"
          "  \"producer\": "
          (pfx:obj (list (cons "name" (pfx:str "PFSUITE"))
                         (cons "version" (pfx:str "V6"))
@@ -356,10 +419,8 @@
          "  \"materials\": " (pfx:arr-lines mats) ",\n"
          "  \"diagnostics\": " (pfx:arr-lines (reverse *pfx-diags*)) "\n"
          "}\n"))
-     (if (setq f (open path "w"))
+      (if (pfx:write-file path doc)
        (progn
-         (write-line doc f)
-         (close f)
          (pfl:say (strcat "PFEXPORT: " (itoa (length connected)) " connected line(s), "
                           (itoa (length structs)) " structure(s), "
                           (itoa (length pipes)) " pipe(s), "
@@ -367,7 +428,7 @@
          (if *pfx-diags*
            (pfl:say (strcat "  " (itoa (length *pfx-diags*))
                             " diagnostic(s) written into the file."))))
-       (pfl:say (strcat "PFEXPORT: cannot write " path)))))))
+        (pfl:say "PFEXPORT: no file replaced."))))))
   (princ))
 
 (defun c:PFEXPORT () (pfx:main))
