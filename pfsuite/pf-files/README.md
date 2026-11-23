@@ -1,21 +1,7 @@
-# pf-files.lsp — where the file dialogs open
+# Project file locations
 
-**Load position:** 4 (after pf-carlson).
-**May depend on:** pf-cfg.
-**Depended on by:** pf-anchor, pf-assign, pf-bench.
+`pf-files.lsp` loads after pf-carlson. It finds the standard folders used by the anchor dialog and remembers the last folder chosen for each file type during the session.
 
-## What it owns
+The project root comes from Carlson's `tmpdir$`. Standard subfolders are searched up to three levels above it. A browsed folder is remembered only after the drafter actually selects a file there, so Cancel does not change the next dialog's start location.
 
-Project folders, ported from V5's `pfsettings`:
-- the project root is Carlson's `tmpdir$`;
-- each file type has the firm's standard subfolder, searched up to 3 levels above the root;
-- the folder last browsed to is remembered for the session.
-
-## Public API
-
-`pff:root`, `pff:root-set`, `pff:std-dir`, `pff:last-dir`, `pff:dir`,
-`pff:remember`, `pff:browse`, `pff:find-in-std`
-
-## Rules
-
-- **The remembered folder is written only with the folder actually chosen.** That fixes V5's LOW-3.
+Main readers: `pff:root`, `pff:std-dir`, `pff:last-dir`, and `pff:find-in-std`. `pff:browse` prompts for a file and `pff:remember` stores its chosen folder.

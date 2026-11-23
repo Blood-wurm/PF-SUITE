@@ -1,30 +1,17 @@
-# pf-bench.lsp — the workbench (NOT part of the suite)
+# Diagnostic tools
 
-**Load position:** last.
-**May depend on:** anything above it.
-**Depended on by:** nothing. **No suite module may call into it.**
+`pf-load.lsp` loads `Diagnostic_Tools/pf-bench.lsp` last for development checks. Suite modules do not call into it. `PFLOCKATT.lsp` is a separate Block Editor helper and is not loaded automatically.
 
-## What it owns
-
-Everything that exists to build or check the suite, rather than run it, in
-one file. V5 grew thirteen diagnostic commands; this stays one file. It is
-deleted whole when V6 ships.
-
-| Command | What it does |
+| Command | Use |
 |---|---|
-| PFMKATT | Inside BEDIT: builds the attribute definitions from `*pf-tags*`, so no tag is mistyped |
-| PFMKPIPEATT | Inside BEDIT on PFSUITE_PIPE: adds PFLABEL2 (row 2, a copy of PFLABEL one row below) and the label inputs PFLENPRE, PFLENSUF, PFSLOPEPRE, PFSLOPESUF |
-| PFMKANCATT | Inside BEDIT on PFSUITE_ANCHOR: adds whichever of the anchor's nine tags (V5's eight + CL) the block lacks, invisible. PFSETUP won't write an anchor until they're all there |
-| PFSEL | Inside BEDIT: selects a nested profile symbol by its state name |
-| PFGATE | Pick a suite structure or pipe: checks its tags, parameters and states. For SMH it checks PFSIZE is a cone (48x24/48x30/48x36) and that PFFLOORDWN drops one floor end straight down and PFDEPTH carries it; for lookup structures it checks every size's width. It also dry-runs PFTOP, PFDEPTH where applicable, and a label move. Ends "ready to test" or not |
-| PFRECTEST | Pick a **test** insert: round-trips pf-record |
-| PFSYNCTEST | Run 1 snapshots every suite block (read only). You ATTSYNC. Run 2 reports what was lost |
-| PFPIPETEST | Places a pipe by code and checks it followed |
-| PFGRIDTEST | Lists the anchors, reads the grid you click, prints station and elevation at your clicks, and shows where the .cl came from |
-| PFLINETEST | What the line tree sees, read only: every line (grid or V5 stub, `.cl` read or walked), every structure on it in station order with its built name, a `*` where PFNAME differs, then near misses, structures on no line, stacked pairs, and the anchor checks for every grid. Lay it beside V5's labels on the same drawing |
-| PFSELFTEST | The test sheet, run by code (Jake, 2026-10-30: "I want PFSELFTEST to do all of the testing"). No picks: it makes its own test blocks far out in model space, drives the real suite code against them, prints PASS / FAIL with what it got, then erases them. Real blocks are only read. Groups: 1 label rows (per-type prefixes, PFELEVPRE), 2 pipe label inside/outside, 3 PFREFRESH scope, 4 line tree, 5 grid anchors (PFSETUP's writer and checks, PFREMOVE), then on **test lines of its own** (STORM_YA / YB / YC, `.cl` files written to `%TEMP%\PFSELFTEST`, a grid each): 6 PFSETUP Scan / Anchor / Edit, 7 PFASSIGN (and Assign for one line), 8 PFSTRUCT, 9 PFREFRESH, 10 PFPIPE and the leader, 11 what PFREMOVE leaves, 12 the palette's trees, panels and refusals; then 13 saved defaults (pf-defaults: line > utility > drawing > built-in, on a made-up type so nothing real is touched, plus a typed value kept on a test CBI) and 14 headwall and sanitary blocks (`PFSUITE_HDWL_24x36`-style names everywhere; with the test world and the draft blocks inserted in the drawing, PFSTRUCT + PFREFRESH on a headwall -- flowline, `PFINV1` text and place, a hand-moved `PFINV1` -- and a sanitary MH's `PFSIZE`; SKIPs and says so when the drawing has no such blocks). Groups 6-11 call each command's work function (`pfn:scan-in`, `pfn:place-rec`, `pfn:edit-check` / `edit-write`, `pfa:run`, `pfs:run`, `pfu:run`, `pfp:place`) with their own answers, and read what it says through `pfb:hush` (pf-lib's `*pfl-quiet*`) instead of printing it. **Every new module ships with its group** (Jake, 2026-10-30). Left by hand: the dialog, the clicks, UNDO, save / reopen, another drawing, ATTSYNC. (Core Console can't do this: its ActiveX is off, so no dynamic block is recognised -- tried 2026-10-27.) |
+| `PFGATE` | Check a picked structure, pipe, or crossing block against its required tags, properties, and behavior. |
+| `PFSELFTEST` | Create temporary test objects, run suite operations and assertions, then clean up. Reports PASS, FAIL, and SKIP. |
+| `PFMKATT`, `PFMKPIPEATT`, `PFMKANCATT`, `PFSEL` | Help build and inspect blocks in BEDIT. |
+| `PFRECTEST`, `PFSYNCTEST` | Check stored records and ATTSYNC effects. |
+| `PFPIPETEST`, `PFGRIDTEST`, `PFLINETEST` | Inspect pipes, grids, and line membership. |
 
-## Rules
+PFSELFTEST defines groups 1–22, 24, and 25. The later groups cover faces (15), invert rows (16), the pipe table (17), plan labels (18), crossings (19), palette reads (20), drawing settings (21), Delete Line (22), design checks (24), and footer behavior (25). Some groups require Carlson and suitable block definitions; SKIP is not a pass.
 
-- **No copies of shared code.** It calls pf-lib, pf-record, pf-draw and the rest. Only its own reporting helpers live here.
-- **Never paste multi-line test sequences at the command line.** Wrap them in a bench command instead.
+The test world uses temporary lines and `.cl` files under `%TEMP%\PFSELFTEST`. Dialog clicks, UNDO, save/reopen, ATTSYNC, and live Carlson/OpenDCL behavior need separate interactive checks. The current crossing PFGATE has known ×5/independent-axis and pre-REGEN hatch checks that can falsely fail the accepted ×10 block; see [pf-xing](../pf-xing/README.md).
+
+Load `PFLOCKATT.lsp` separately to lock or unlock selected block attribute definitions in BEDIT.

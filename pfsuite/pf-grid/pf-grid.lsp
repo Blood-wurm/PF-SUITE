@@ -417,7 +417,17 @@
   (setq ty (nth (atoi (get_tile "s_type")) *pf-types*))
   (pfn:fill-mats (cdr (assoc ty *pfn-last*))))
 
-(defun pfn:on-cl ( / f i p)
+;; (pfn:pro-pair ty nm) -> (inv . top) found in the Profiles folder as
+;;   TYPE_NAME_INV.pro / TYPE_NAME_TOP.pro | nil.  BOTH or nothing -- the
+;;   record binds a pair.  Scan's late .pro binding, moved into the dialog
+;;   for V6.1 (Scan is gone): offered, never written until OK.
+(defun pfn:pro-pair (ty nm / dir inv top)
+  (if (and ty nm (/= nm "") (setq dir (pff:std-dir "pro"))
+           (setq inv (pfn:pro-lookup dir ty nm "INV"))
+           (setq top (pfn:pro-lookup dir ty nm "TOP")))
+    (cons inv top)))
+
+(defun pfn:on-cl ( / f i p pair)
   (if (setq f (pff:browse "Select Centerline (.CL) File" "cl"))
     (progn
       (setq d-cl f p (pfl:line-parts (strcase (vl-filename-base f))))
@@ -425,6 +435,13 @@
       (if (= (vl-string-trim " " (get_tile "s_name")) "") (set_tile "s_name" (cdr p)))
       (if (setq i (vl-position (car p) *pf-types*))
         (progn (set_tile "s_type" (itoa i)) (pfn:on-type)))
+      ;; both .pro slots empty: offer the pair the Profiles folder has
+      (if (and (null d-inv) (null d-top)
+               (setq pair (pfn:pro-pair (car p) (strcase (vl-string-trim " " (get_tile "s_name"))))))
+        (progn
+          (setq d-inv (car pair) d-top (cdr pair))
+          (pfn:show "s_inv" d-inv)
+          (pfn:show "s_top" d-top)))
       (set_tile "error" ""))))
 
 (defun pfn:on-pro (role / f)
@@ -485,6 +502,7 @@
      (pfn:show "s_tine" d-tine) (pfn:show "s_tind" d-tind)
      (set_tile "s_repick" "0")
      (if (not (pfn:g 'edit init)) (mode_tile "s_repick" 1))
+     (if (not (pfn:g 'edit init)) (mode_tile "s_delete" 1))
      (action_tile "s_type"      "(pfn:on-type)")
      (action_tile "s_cl_pick"   "(pfn:on-cl)")
      (action_tile "s_inv_pick"  "(pfn:on-pro \"INV\")")
@@ -494,6 +512,7 @@
      (action_tile "s_pro_clr"   "(progn (setq d-inv nil d-top nil) (pfn:show \"s_inv\" nil) (pfn:show \"s_top\" nil))")
      (action_tile "s_tin_clr"   "(progn (setq d-tine nil d-tind nil) (pfn:show \"s_tine\" nil) (pfn:show \"s_tind\" nil))")
      (action_tile "accept"      "(pfn:on-ok)")
+     (action_tile "s_delete"    "(done_dialog 2)")
      (action_tile "cancel"      "(done_dialog 0)")
      (action_tile "help"
        "(alert \"PFSETUP records a profile grid.\\n\\nName is the identity key -- picked files validate against it.\\nBind the .cl (station source), the _INV/_TOP .pro pair and the existing + DESIGN_* surfaces (each pair both-or-neither).\\n\\nType the datum elevation (lower-left grid corner), then OK: pick LOWER-LEFT, then TOP-RIGHT.\")")
@@ -501,7 +520,8 @@
      (unload_dialog id)
      (cond
        ((vl-catch-all-error-p r) (pfl:say (strcat "Dialog error: " (vl-catch-all-error-message r))) nil)
-       ((= r 1) d-res)))))
+       ((= r 1) d-res)
+       ((= r 2) 'delete)))))
 
 
 ;;; ==========================================================================
@@ -532,8 +552,12 @@
     ((= (type (setq r (pfn:make rec))) 'STR) (strcat "REFUSED -- " r))
     (T (if stub (pfr:stub-del (car stub) (cadr stub))) r)))
 
-;; (pfn:place stub) -> nil   stub: (type name cl inv top) | nil (blank form)
-(defun pfn:place (stub / init rec pts r)
+;; (pfn:place stub) -> the new anchor | nil (cancelled or refused)
+;;   stub: (type name cl inv top) | nil (blank form -- V6.1's Anchor Grid).
+;;   A blank form whose type and name match a line an old Scan named (a stub)
+;;   uses that stub up, as anchoring from it would: the line is one line,
+;;   not a grid plus a grid-less twin.
+(defun pfn:place (stub / init rec pts r made)
   (if stub
     (setq init (list (cons 'type (car stub)) (cons 'name (cadr stub)) (cons 'cl (caddr stub))
                      (cons 'inv (pfn:nz (nth 3 stub))) (cons 'top (pfn:nz (nth 4 stub))))))
@@ -544,15 +568,18 @@
     ((null (setq pts (pfn:pick-corners))) (pfl:say "Cancelled -- nothing written."))
     (T
      (pfn:remember rec)
+     (if (and (null stub) (pfr:stub-get (pfn:g 'type rec) (pfn:g 'name rec)))
+       (setq stub (list (pfn:g 'type rec) (pfn:g 'name rec))))
      (setq rec (append (list (cons 'll (car pts)) (cons 'tr (cadr pts))) rec)
            r   (pfn:place-rec rec stub))
      (if (= (type r) 'STR)
        (pfl:say r)
        (progn
+         (setq made r)
          (pfl:say (strcat "Anchored " (pfn:g 'type rec) " '" (pfn:g 'name rec) "'.  Run PFASSIGN to put"
                           " structures on it."))
          (foreach s (pfn:checks r (pfg:top-lines) (pfn:grid-lines)) (pfl:say (strcat "  ** " s)))))))
-  (princ))
+  made)
 
 ;; (pfn:edit-check anchor rec) -> refusal string | 'UNKNOWN (go ahead -- the
 ;;   old .cl can't be read, so the station ranges weren't compared) | nil (go)
@@ -586,12 +613,26 @@
   (if (null (pfr:val-get anchor *pf-xd-stamp*)) (pfr:val-put anchor *pf-xd-stamp* (pfl:handle anchor)))
   T)
 
-;; (pfn:edit anchor) -> nil
-(defun pfn:edit (anchor / rec r pts)
+;; (pfn:edit anchor) -> 'updated | 'deleted | 'cancelled | 'refused
+;;   The dialog opens filled with the anchor's record.  Empty .pro slots are
+;;   offered the pair the Profiles folder has (Scan's late binding; written
+;;   only on OK).  Delete Line... in the dialog hands over to
+;;   pfn:delete-line-ask (V6.1).
+(defun pfn:edit (anchor / init rec r pts pair result)
   (foreach s (pfn:checks anchor (pfg:top-lines) (pfn:grid-lines)) (pfl:say (strcat "  ** " s)))
+  (setq init (pfn:rec-of anchor))
+  (if (and (null (pfn:nz (pfn:g 'inv init))) (null (pfn:nz (pfn:g 'top init)))
+           (setq pair (pfn:pro-pair (pfn:g 'type init) (pfn:g 'name init))))
+    (progn
+      (setq init (append (list (cons 'inv (car pair)) (cons 'top (cdr pair))) init))
+      (pfl:say (strcat "  The Profiles folder has " (vl-filename-base (car pair)) " / "
+                       (vl-filename-base (cdr pair)) " -- offered in the dialog; OK binds them."))))
   (cond
-    ((null (setq rec (pfn:dialog (pfn:rec-of anchor)))) (pfl:say "Cancelled -- nothing written."))
-    ((= (type (setq r (pfn:edit-check anchor rec))) 'STR) (pfl:say r))
+    ((null (setq rec (pfn:dialog init)))
+     (pfl:say "Cancelled -- nothing written.")
+     (setq result 'cancelled))
+    ((eq rec 'delete) (setq result (pfn:delete-line-ask anchor)))
+    ((= (type (setq r (pfn:edit-check anchor rec))) 'STR) (pfl:say r) (setq result 'refused))
     (T
      (if (eq r 'UNKNOWN) (pfl:say "  NOTE: the old .cl can't be read -- the station range wasn't compared."))
      (setq pts (cond
@@ -599,13 +640,14 @@
                  ((pfn:corners anchor))
                  (T (pfl:say "  No width on record (an old anchor) -- pick the corners.") (pfn:pick-corners))))
      (cond
-       ((null pts) (pfl:say "Cancelled -- nothing written."))
+       ((null pts) (pfl:say "Cancelled -- nothing written.") (setq result 'cancelled))
        (T
         (pfn:remember rec)
         (pfn:edit-write anchor rec pts)
+        (setq result 'updated)
         (pfl:say (strcat "Updated " (pfn:g 'type rec) " '" (pfn:g 'name rec) "' in place.  PFASSIGN, then"
                          " PFREFRESH, to bring the profile along."))))))
-  (princ))
+  result)
 
 
 ;;; ==========================================================================
@@ -617,13 +659,22 @@
 ;;; erase the copies as orphans and re-label the pipes against the nearest
 ;;; OTHER grid).  "Everything": those are erased too.
 
-;; (pfn:on-grid anchor) -> (copies pipes leaders) whose grid is this anchor's
-(defun pfn:on-grid (anchor / cs ps ls ends)
+;; (pfn:on-grid anchor) -> (copies pipes leaders crossings) whose grid is this
+;;   anchor's.  crossings (V6.1): the PFSUITE_CROSSING blocks in the grid AND
+;;   everything the tool drew for them (dimension, ticks, note, leader) --
+;;   released with their block, or a later PFREFRESH would erase the drawn
+;;   extras of a block it can no longer update.
+(defun pfn:on-grid (anchor / cs ps ls xs ends idx extras)
   (foreach c (pfs:copies) (if (eq (nth 3 c) anchor) (setq cs (cons (car c) cs))))
+  (setq idx (pfg:index))
   (foreach p (pfp:all)
-    (if (and (setq ends (pfp:ends p)) (eq (pfg:anchor-of (car ends)) anchor))
+    (if (and (setq ends (pfp:ends p)) (eq (pfg:anchor-of-in (car ends) idx) anchor))
       (setq ps (cons p ps) ls (append (pfp:leaders p) ls))))
-  (list cs ps ls))
+  (setq extras (pfk:extras))
+  (foreach x (pfk:all)
+    (if (eq (pfg:anchor-of-in (pfl:ins x) idx) anchor)
+      (setq xs (append (cons x (pfk:extras-of x extras)) xs))))
+  (list cs ps ls xs))
 
 ;; (pfn:remove anchor mode objs) -> count of objects erased or released
 ;;   mode "Anchor" | "Everything".  objs from pfn:on-grid.
@@ -660,7 +711,9 @@
      (pfl:say (strcat "Grid " (if g (pfg:title g) "(unreadable)") ":  "
                       (itoa (length (car objs))) " profile structure(s), "
                       (itoa (length (cadr objs))) " pipe(s), "
-                      (itoa (length (caddr objs))) " pipe-label leader(s) on it."))
+                      (itoa (length (caddr objs))) " pipe-label leader(s), "
+                      (itoa (length (vl-remove-if-not 'pfk:xing-p (cadddr objs))))
+                      " crossing mark(s) on it."))
      (initget "Anchor Everything")
      (setq mode (cond ((getkword "\nRemove [Anchor/Everything] <Anchor>: ")) ("Anchor")))
      (initget "Yes No")
@@ -679,6 +732,187 @@
          (pfl:say "  The line has left the line table: PFASSIGN takes it off its structures (a junction's name drops it).")
          (pfl:say "  One UNDO takes this back.")))))
   (princ))
+
+;;; ==========================================================================
+;;; SECTION 7b  --  Delete Line  (V6.1, 2026-11-21)
+;;; ==========================================================================
+;;; From Edit Anchor's dialog.  NOT PFREMOVE Everything: the only things
+;;; erased are the line's PFSUITE anchors (copies included).  Everything else
+;;; stays in the drawing -- the grid, the centerline, the plan blocks, the
+;;; profile copies, pipes, leaders, crossing marks and what was drawn for
+;;; them -- and what the suite made for the line is RELEASED (pf-record), so
+;;; PFREFRESH and PFXLABEL never update or erase it again.  The line leaves
+;;; every plan structure at once (pfa:drop-line), its old stub goes, and a
+;;; junction keeps its other lines under its new name.  One UNDO restores it.
+;;;
+;;; Why each part, all found by reading the drawing (pfn:line-footprint):
+;;;   copied anchors  an anchor is a copy only while its original exists; left
+;;;                   behind, a copy would become the line's grid again
+;;;   the stub        a stub is a full line for membership: left behind, the
+;;;                   next PFASSIGN would put the structures back on it
+;;;   crossings       both kinds: marks ON this line's grid, and marks on
+;;;                   another line's grid for a crossing BY this line -- with
+;;;                   the line gone, PFXLABEL would erase those as "no longer
+;;;                   crossing" and PFREFRESH would erase their dimensions
+
+;; (pfn:anchor-line a) -> the line an anchor is for: its grid's .cl name, or
+;;   UTIL_LINE from its attributes when the grid can't be read
+(defun pfn:anchor-line (a / g at)
+  (setq g (pfg:grid a))
+  (cond
+    ;; IF, not AND: a bodiless cond clause returns its test, and AND returns
+    ;; only T (2026-11-03's lesson -- relearned in the V6.1 CAD pass)
+    ((if g (pfg:line-name g)))
+    (T (setq at (pfg:atts a))
+       (strcase (strcat (pfg:att *pf-anc-util* at) "_" (pfg:att *pf-anc-line* at))))))
+
+;; (pfn:line-anchors lname) -> every anchor of the line, copies included
+(defun pfn:line-anchors (lname / out)
+  (foreach a (pfg:all)
+    (if (= (pfn:anchor-line a) lname) (setq out (cons a out))))
+  (reverse out))
+
+;; (pfn:add-new items into) -> into with each item not already in it
+(defun pfn:add-new (items into)
+  (foreach e items
+    (if (and e (not (member e into))) (setq into (cons e into))))
+  into)
+
+;; (pfn:line-footprint lname) -> what Delete Line touches, an alist:
+;;   name anchors copies-of-anchors objects (to release) crossings (the marks
+;;   among them) others (marks on OTHER lines' grids crossed by this one)
+;;   structures (plan structures on it) junctions (those also on another
+;;   line) stub
+;;   READS ONLY.
+(defun pfn:line-footprint (lname / anchors objects xings others extras rec parts plans junctions)
+  (setq anchors (pfn:line-anchors lname)
+        extras  (pfk:extras)
+        parts   (pfl:line-parts lname))
+  (foreach a anchors
+    (if (not (pfg:copy-p a))
+      (setq objects (pfn:add-new (apply 'append (pfn:on-grid a)) objects))))
+  ;; a profile copy of this line outside its grid's box is still this line's
+  (foreach c (pfs:copies-if '(lambda (e p l) (= l lname)))
+    (setq objects (pfn:add-new (list (car c)) objects)))
+  (foreach x (pfk:all)
+    (if (and (setq rec (pfk:rec x))
+             (or (= (car rec) lname) (= (caddr rec) lname)))
+      (progn
+        (if (/= (car rec) lname) (setq others (cons x others)))
+        (setq objects (pfn:add-new (cons x (pfk:extras-of x extras)) objects)))))
+  (setq xings (vl-remove-if-not 'pfk:xing-p objects))
+  (foreach e (pfm:structures)
+    (if (assoc lname (pfr:memb-get e))
+      (progn
+        (setq plans (cons e plans))
+        (if (cdr (pfr:memb-get e)) (setq junctions (cons e junctions))))))
+  (list (cons 'name lname)
+        (cons 'anchors anchors)
+        (cons 'copied (vl-remove-if-not 'pfg:copy-p anchors))
+        (cons 'objects (reverse objects))
+        (cons 'crossings xings)
+        (cons 'others others)
+        (cons 'structures (reverse plans))
+        (cons 'junctions (reverse junctions))
+        (cons 'stub (pfr:stub-get (car parts) (cdr parts)))))
+
+(defun pfn:footprint (key data) (cdr (assoc key data)))
+
+;; (pfn:count-kind objs test) -> how many of objs pass test
+(defun pfn:count-kind (objs test / n)
+  (setq n 0)
+  (foreach e objs (if (apply test (list e)) (setq n (1+ n))))
+  n)
+
+;; (pfn:footprint-lines data) -> the confirmation's sentences, plain words
+(defun pfn:footprint-lines (data / objs title n-copy n-pipe n-lead n-xing n-other n-drawn junc)
+  (setq objs   (pfn:footprint 'objects data)
+        title  (pfl:line-parts (pfn:footprint 'name data))
+        n-copy (pfn:count-kind objs '(lambda (e) (and (pfr:ours-p e)
+                                                    (= (strcase (cond ((pfr:view e)) (""))) (strcase *pf-view-pro*)))))
+        n-pipe (pfn:count-kind objs 'pfp:pipe-p)
+        n-lead (pfn:count-kind objs 'pfp:leader-pipe)
+        n-xing (length (pfn:footprint 'crossings data))
+        n-other (length (pfn:footprint 'others data))
+        n-drawn (- (length objs) n-copy n-pipe n-lead n-xing)
+        junc   (pfn:footprint 'junctions data))
+  (list
+    (strcat "Delete Line '" (cdr title) "' (" (pfn:footprint 'name data) ") from PFSUITE?")
+    (strcat "Erased: " (itoa (- (length (pfn:footprint 'anchors data)) (length (pfn:footprint 'copied data))))
+            " anchor(s)" (if (pfn:footprint 'copied data)
+                           (strcat " and " (itoa (length (pfn:footprint 'copied data))) " copied anchor(s)") "")
+            (if (pfn:footprint 'stub data) "; its old Scan record too." "."))
+    (strcat "Taken off this line: " (itoa (length (pfn:footprint 'structures data))) " plan structure(s)"
+            (if junc (strcat ", " (itoa (length junc)) " of them junctions that stay on their other line(s)") "")
+            ".")
+    (strcat "Left in place, released: " (itoa n-copy) " profile copies, " (itoa n-pipe) " pipes, "
+            (itoa n-lead) " leaders, " (itoa n-xing) " crossing marks"
+            (if (> n-other 0) (strcat " (" (itoa n-other) " on other lines' grids)") "")
+            (if (> n-drawn 0) (strcat ", " (itoa n-drawn) " crossing dimensions/notes") "") ".")
+    "The grid, the centerline file and the plan blocks are not touched."
+    "One UNDO restores the line."))
+
+;; (pfn:delete-confirm data) -> T only when Delete Line is clicked
+(defun pfn:delete-confirm (data / id r lines keys)
+  (setq id (load_dialog (strcat *pf-root* "\\pf-grid\\pf-grid.dcl")))
+  (cond
+    ((< id 0) (pfl:say "Delete Line: the confirmation dialog could not load.") nil)
+    ((not (new_dialog "pfsetup_delete" id))
+     (unload_dialog id)
+     (pfl:say "Delete Line: the confirmation dialog could not open.") nil)
+    (T
+     (setq lines (pfn:footprint-lines data)
+           keys  '("d_line" "d1" "d2" "d3" "d4" "d5"))
+     (foreach k keys
+       (set_tile k (cond ((nth (vl-position k keys) lines)) (""))))
+     (action_tile "d_yes" "(done_dialog 1)")
+     (action_tile "cancel" "(done_dialog 0)")
+     (setq r (vl-catch-all-apply 'start_dialog nil))
+     (unload_dialog id)
+     (and (not (vl-catch-all-error-p r)) (= r 1)))))
+
+;; (pfn:delete-line data) -> (dropped junctions)   THE WORK, no questions --
+;;   what PFSELFTEST drives.  data: pfn:line-footprint's.  Runs inside the
+;;   caller's pfd:run: one UNDO.  ORDER MATTERS: the anchors and the stub go
+;;   before the plan side, so the line table no longer has the line when the
+;;   junctions are renamed.
+(defun pfn:delete-line (data / name title parts r)
+  (setq name  (pfn:footprint 'name data)
+        parts (pfl:line-parts name)
+        title (strcat "Line '" (cdr parts) "' deleted"))
+  (setq *pfd-stage* "releasing what the suite made for the line")
+  (foreach e (pfn:footprint 'objects data)
+    (if (and e (entget e)) (pfr:release e title)))
+  (setq *pfd-stage* "erasing the line's anchors")
+  (foreach a (pfn:footprint 'anchors data)
+    (if (and a (entget a)) (pfd:erase a)))
+  (if (pfn:footprint 'stub data) (pfr:stub-del (car parts) (cdr parts)))
+  (setq *pfd-stage* "taking the line off its plan structures")
+  (setq r (pfa:drop-line name))
+  (pfl:say (strcat "Line '" (cdr parts) "' deleted: "
+                   (itoa (length (pfn:footprint 'anchors data))) " anchor(s) erased; "
+                   (itoa (length (car r))) " structure(s) taken off it ("
+                   (itoa (length (cadr r))) " junction(s) stay on their other lines); "
+                   (itoa (length (pfn:footprint 'objects data))) " object(s) left in place, released."))
+  (if (pfn:footprint 'others data)
+    (pfl:say (strcat "  " (itoa (length (pfn:footprint 'others data)))
+                     " crossing mark(s) on other lines were for this line -- released.  If the line is"
+                     " anchored again, Find Crossings there places new marks; erase the old ones by hand.")))
+  (pfl:say "  One UNDO restores the line.")
+  r)
+
+;; (pfn:delete-line-ask anchor) -> 'deleted | 'cancelled   the dialog's
+;;   Delete Line...: the footprint, the confirmation, the work
+(defun pfn:delete-line-ask (anchor / name data)
+  (setq name (pfn:anchor-line anchor))
+  (cond
+    ((or (null name) (= name "_"))
+     (pfl:say "Delete Line: this anchor names no line -- nothing removed.")
+     'cancelled)
+    ((not (pfn:delete-confirm (setq data (pfn:line-footprint name))))
+     (pfl:say "Delete Line cancelled -- nothing removed.")
+     'cancelled)
+    (T (pfn:delete-line data) 'deleted)))
 
 (defun c:PFREMOVE ()
   (if (null pfd:run)

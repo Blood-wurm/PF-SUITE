@@ -342,7 +342,7 @@
 ;; On a pipe label's leader: the handle of the pipe it belongs to.
 (setq *pf-xd-pipe*   "PIPE")
 
-;; Crossings (PFXLABEL, 2026-11-20).  On a PFSUITE_XING block: what it marks,
+;; Crossings (PFXLABEL, 2026-11-20).  On a PFSUITE_CROSSING block: what it marks,
 ;; (target-line target-station source-line source-station).  On everything
 ;; the tool draws for it (dimension, wall ticks and note, leader): the
 ;; crossing block's handle, so PFREFRESH redraws it with its block and erases
@@ -761,6 +761,32 @@
     ("PFCLRMIN"  . "18")     ; minimum crossing clearance, inches
     ("PFCLRWARN" . "6")))    ; dimension drawn when within this many inches of it
 
+;;; ---- Drawing settings (V6.1, 2026-11-21) ------------------------------------
+;;; ONE value per drawing, for every line -- kept in their own dictionary,
+;;; PFSUITE_SETTINGS, with a FORMAT record (its own version; the entity
+;;; XDATA schema, *pf-schema*, is unchanged).  The V6.0 SETTING records in
+;;; PFSUITE_DEFAULTS (line, utility or drawing scope) are read only to
+;;; migrate them: a line or utility value never overrides the drawing's.
+;;; A blank value is not stored -- the built-in below is used, and for the
+;;; slope and cover minimums there is none: no value, no check.
+(setq *pf-settings-dict* "PFSUITE_SETTINGS")
+(setq *pf-settings-format* 1)
+(setq *pf-drawing-settings*
+  '(("PFSLOPEMIN" . nil)     ; minimum pipe slope, percent, signed (uphill fails)
+    ("PFCOVERMIN" . nil)     ; minimum pipe cover, feet, against the DESIGN TIN
+    ("PFCLRMIN"  . "18")     ; minimum crossing clearance, inches, outside to outside
+    ("PFCLRWARN" . "6")      ; crossing warning band, inches
+    ("PFPLANHT"  . "2.4")))  ; plan label text height, drawing units
+;; What the Settings tab and the messages call them: (tag label unit)
+(setq *pf-drawing-setting-words*
+  '(("PFSLOPEMIN" "Minimum pipe slope" "%")
+    ("PFCOVERMIN" "Minimum pipe cover" "ft")
+    ("PFCLRMIN"   "Minimum crossing clearance" "in")
+    ("PFCLRWARN"  "Crossing warning band" "in")
+    ("PFPLANHT"   "Plan label text height" "")))
+;; The V6.0 tags a drawing may already hold in PFSUITE_DEFAULTS
+(setq *pf-legacy-setting-tags* '("PFCLRMIN" "PFCLRWARN" "PFPLANHT"))
+
 ;;; ---- Top of grid ----------------------------------------------------------
 ;;; V5's probe: the highest line on this layer straight above the structure.
 ;;; Grids have stepped tops, so it is read per station.  The search stops this
@@ -883,44 +909,77 @@
 ;;; On the line picked in the palette (drawing-wide may come later): every
 ;;; place another line's .cl crosses it.  The crossing pipe comes from that
 ;;; line's own PFSUITE_PIPE blocks -- no pipe block there, nothing is drawn.
-;;; One PFSUITE_XING block per crossing, inserted at the crossing pipe's
-;;; INVERT:
-;;;   ellipse       the INSIDE of the pipe, drawn 1 ft wide x 10 tall; PFDIA
-;;;                 (linear) scales it from the insertion point
-;;;   two ticks     short level lines at the OUTSIDE diameter, moved by
-;;;                 PFODTOP / PFODBOT (linear, straight up / down from the
-;;;                 insertion point)
-;;;   station line  stretched by PFTOP (to the grid top) and PFBOT (below the
-;;;                 grid); PFSTA1 rides PFBOT -- V5's vertical station text
-;;;   label         PFLABEL / PFLABEL2 on PFLEAD (point); left of the ellipse
-;;;                 by default, PFFLIP (flip) puts it right; dragged away, it
-;;;                 goes on a leader the tool draws
+;;; One crossing block per crossing, inserted at the crossing pipe's INVERT.
+;;; The block as saved 2026-11-22 (blocks\PFSUITE_CROSSING.dwg, read in CAD):
+;;;   inner ellipse  the INSIDE of the pipe.  XY parameter PFID_X / PFID_Y =
+;;;                  its X and Y RADII (drafted 0.5 / 5.0).  A move action
+;;;                  on PFID_Y keeps the inner invert at the insertion point
+;;;   outer ellipse  the OUTSIDE of the pipe, concentric.  PFOD_X / PFOD_Y =
+;;;                  its radii (drafted 0.55 / 5.5)
+;;;   wall hatch     SOLID, associative, between the two ellipses, in no
+;;;                  action: it refills from the ellipses on a REGEN (until
+;;;                  then a resized insert shows the old fill)
+;;;   visibility     WALL ON (both ellipses + hatch) / WALL OFF (inner only:
+;;;                  the OD is not known -- a wall is never invented)
+;;;   label          PFLABEL / PFLABEL2 placed about PFLEAD (point).  RIGHT of
+;;;                  the pipe by default; the side is read off PFLEAD (no flip
+;;;                  grip).  Dragged away, it goes on a leader the tool draws
+;;;   data           hidden PFTYPE PFSIZE PFMAT PFINV PFCLR
+;;; DEFERRED (not in the saved block yet): the station line (PFTOP / PFBOT)
+;;; and its vertical station text PFSTA1.  pf-xing uses them only when an
+;;; insert has them.
+;;; Radii in drawing units: X = ID / 24 (true size, feet), Y = X times the
+;;; grid's vertical exaggeration; the outer from the OD the same way.
 ;;; Everything in the block on layer 0, colour ByBlock: the tool turns the
 ;;; insert RED when the clearance is short (or unknown).
 ;;; Clearance is outside to outside.  Within PFCLRWARN of PFCLRMIN (or under
 ;;; it) the tool also draws a dimension from the outside of THIS line's pipe
 ;;; wall, PFCLRMIN long, toward the crossing pipe, reading `18" MIN.`, and a
 ;;; tick + note at that wall: `2.5" WT. (18" RCP)`.
-(setq *pf-xing-block* "PFSUITE_XING")
-(setq *pf-xing-dia*   "PFDIA")
-(setq *pf-xing-odtop* "PFODTOP")
-(setq *pf-xing-odbot* "PFODBOT")
+;; The block's name as saved (Jake, 2026-11-22: change the line, not the
+;; block).  UPDATE LATER -- see pf-xing\README.md "To update later":
+;; REGEN after a run resizes a crossing, and PFGATE's crossing check.
+(setq *pf-xing-block* "PFSUITE_CROSSING")
+;; the pipe's size, XY parameters (radii, drawing units).  NOT the pipe
+;; block's PFDIA -- that contract is the pipe's own and is unchanged.
+(setq *pf-xing-id-x*  "PFID_X")
+(setq *pf-xing-id-y*  "PFID_Y")
+(setq *pf-xing-od-x*  "PFOD_X")
+(setq *pf-xing-od-y*  "PFOD_Y")
+;; visibility states (the parameter is found by its states, pfl:visprop)
+(setq *pf-xing-state-wall*   "WALL ON")
+(setq *pf-xing-state-nowall* "WALL OFF")
+(setq *pf-xing-lead*  "PFLEAD")
+;; DEFERRED -- the station line's stretch points; used only if present
 (setq *pf-xing-top*   "PFTOP")
 (setq *pf-xing-bot*   "PFBOT")
-(setq *pf-xing-lead*  "PFLEAD")
-(setq *pf-xing-flip*  "PFFLIP")
 ;; attributes
 (setq *pf-xing-label*  "PFLABEL")     ; PROP. WATER MAIN 'A'
 (setq *pf-xing-label2* "PFLABEL2")    ; 16" C900 DR 14 PVC
-(setq *pf-xing-sta*    "PFSTA1")      ; 4+10.00 PROP. WATER CROSSING (vertical)
+(setq *pf-xing-sta*    "PFSTA1")      ; DEFERRED: 4+10.00 PROP. WATER CROSSING (vertical)
 (setq *pf-xing-type*   "PFTYPE")      ; XING
 (setq *pf-xing-size*   "PFSIZE")      ; the crossing pipe's, 16"
 (setq *pf-xing-mat*    "PFMAT")
 (setq *pf-xing-inv*    "PFINV")       ; its invert at this station
 (setq *pf-xing-clr*    "PFCLR")       ; the clearance measured, inches | UNKNOWN
+;; the tags the saved block must carry (PFGATE); PFSTA1 is deferred, apart
 (setq *pf-xing-tags*
-  (list *pf-xing-label* *pf-xing-label2* *pf-xing-sta* *pf-xing-type*
+  (list *pf-xing-label* *pf-xing-label2* *pf-xing-type*
         *pf-xing-size* *pf-xing-mat* *pf-xing-inv* *pf-xing-clr*))
+(setq *pf-xing-deferred-tags* (list *pf-xing-sta*))
+;; The label, in TEXT HEIGHTS H (pfg:text-ht: 1.6 at HPLOT 20), so the rows
+;; move apart as the text grows: PFLEAD this far right (or left) of the pipe
+;; centre and below it; the rows' anchors this far above / below PFLEAD
+;; (middle-left on the right side, middle-right on the left).  Jake's drafted
+;; default at HPLOT 20: 1.6 right, 0.4 below, rows 0.8 above / below.
+(setq *pf-xing-lead-dx*  1.0)
+(setq *pf-xing-lead-dy*  0.25)
+(setq *pf-xing-row-dy*   0.5)
+;; A pipe wider than that: PFLEAD this far (H) past the drawn pipe's side.
+(setq *pf-xing-lead-clear* 0.25)
+;; PFLEAD within this many H of a side's default reads as that side, not a
+;; drag -- how the label is put on the LEFT without a leader.
+(setq *pf-xing-side-tol* 0.75)
 (setq *pf-xing-typename* "XING")
 ;; Short utility names, for lists -- the palette's crossing rows read
 ;; "Crossing SAN. A  STA 1+00.00" (Jake, 2026-11-20).  A type with no row
@@ -947,7 +1006,7 @@
     ("ELECTRIC"  . "PROP. ELECTRIC CROSSING")))
 ;; Sizes in drawing units AT 1"=20', scaled with the text (HPLOT / 20).
 (setq *pf-xing-line-ext*  30.0)   ; station line below the grid's bottom (V5)
-(setq *pf-xing-label-dx*  3.2)    ; label from the station line (V5's *pfx-text-dx*)
+(setq *pf-xing-label-dx*  3.2)    ; UNUSED since 2026-11-22 (the label: *pf-xing-lead-dx* etc.)
 (setq *pf-xing-arrow-off* 1.0)    ; leader tip this far off the ellipse (Jake)
 (setq *pf-xing-tick-len*  2.0)    ; the wall ticks the tool draws
 ;; Finding them: a crossing within this many feet of either line's end is a

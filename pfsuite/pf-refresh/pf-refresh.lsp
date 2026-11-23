@@ -226,6 +226,12 @@
                             ((= (car sc) "Selected") (strcat (itoa (length (cdr sc))) " object(s) picked"))
                             ("whole drawing"))
                       " ==="))
+     ;; V6.1: drawing settings are one value per drawing.  Say so while old
+     ;; line / utility values are still stored (Save Settings retires them).
+     (if (setq xs (pfv:ignored-settings))
+       (pfl:say (strcat "  ** " (itoa (length xs)) " line/utility setting(s) from V6.0 are ignored --"
+                        " V6.1 uses one value per drawing (palette Settings tab; Save retires them).")))
+     (setq xs nil)
 
      (setq *pfd-stage* "reading the grids")
      (setq grids (pfg:usable)
@@ -420,7 +426,8 @@
      (foreach c (cond (xextras) ((pfk:extras)))
        (if (not (and (handent (car c)) (entget (handent (car c)))))
          (foreach x (cdr c)
-           (if (pfd:erase x) (setq n-gone (1+ n-gone))))))
+           (if (and (not (pfr:released-p x)) (pfd:erase x))
+             (setq n-gone (1+ n-gone))))))
      (setq times (cons (pfu:took "crossings" tm) times) tm (getvar "MILLISECS"))
 
      ;; 6. what PFSTRUCT still has to place: an alpha block on a line, with no

@@ -1228,53 +1228,153 @@
                            " about the base point"))))))
   ok)
 
-;; (pfb:gate-xing e obj) -> T if the PFSUITE_XING insert has what pf-xing
-;;   uses (Jake builds it, 2026-11-20): every tag, every parameter, and the
-;;   grips doing their jobs -- PFDIA grows the ellipse UP from the insertion
-;;   point, PFODTOP / PFODBOT move a tick, PFTOP / PFBOT the station line.
-;;   Each nudged by 1 and put back.
-(defun pfb:gate-xing (e obj / ok p v0 b0 b1 ell r)
+;; (pfb:xing-def-ents e) -> ((type hidden ed) ...) what the insert's own
+;;   (anonymous) definition holds now -- hidden = a visibility state hides it
+(defun pfb:xing-def-ents (e / sub ed out)
+  (setq sub (tblobjname "BLOCK" (cdr (assoc 2 (entget e)))))
+  (while (and (setq sub (entnext sub)) (setq ed (entget sub)) (/= (cdr (assoc 0 ed)) "ENDBLK"))
+    (setq out (cons (list (cdr (assoc 0 ed)) (= 1 (cdr (assoc 60 ed))) ed) out)))
+  (reverse out))
+
+;; (pfb:xing-label-p tg) -> T for the two label rows (visible); the rest are data
+(defun pfb:xing-label-p (tg) (and (member tg (list *pf-xing-label* *pf-xing-label2*)) T))
+
+;; (pfb:gate-xing e obj) -> T only when the PFSUITE_CROSSING insert meets the
+;;   WHOLE contract (2026-11-22, pf-cfg SECTION 11).  Checked on a temporary
+;;   COPY of the insert, deleted after, so the picked one is never changed:
+;;   - the tags, visible / hidden as the contract says
+;;   - PFID_X / PFID_Y / PFOD_X / PFOD_Y, PFLEAD, WALL ON / WALL OFF
+;;   - sizing (pfk:size, PFXLABEL's own): the drawn radii, the inner invert ON
+;;     the insertion point, the ellipses concentric -- at x10 and at x5
+;;   - each of the four radii INDEPENDENT: X changes width only, Y height
+;;     only (the block as saved 2026-11-22 scales both -- reported as FAIL)
+;;   - WALL ON shows the outer ellipse and the hatch, WALL OFF hides them; the
+;;     hatch associative and following a resize
+;;   - the station line (PFTOP / PFBOT) and PFSTA1: DEFERRED -- reported, and
+;;     the final gate NOT passed while they are missing
+(defun pfb:gate-xing (e obj / ok c ce ad p v0 el want why def hatch bb deferred)
   (setq ok T)
   (pfl:say "")
   (pfl:say "  Attributes")
   (foreach tg *pf-xing-tags*
-    (if (pfr:attr-ent e tg)
-      (pfl:say (strcat "    ok    " tg))
-      (progn (setq ok nil) (pfl:say (strcat "    MISSING  " tg)))))
+    (cond
+      ((null (setq ad (pfr:attr-ent e tg))) (setq ok nil) (pfl:say (strcat "    MISSING  " tg)))
+      ((/= (pfb:xing-label-p tg) (/= 1 (logand 1 (cdr (assoc 70 (entget ad))))))
+       (setq ok nil)
+       (pfl:say (strcat "    FAIL  " tg (if (pfb:xing-label-p tg)
+                                         " is hidden -- the label rows must show"
+                                         " shows -- it is data and must be hidden"))))
+      (T (pfl:say (strcat "    ok    " tg (if (pfb:xing-label-p tg) "  (visible)" "  (hidden)"))))))
   (pfl:say "  Parameters")
-  (foreach nm (list *pf-xing-dia* *pf-xing-odtop* *pf-xing-odbot* *pf-xing-top* *pf-xing-bot*
-                    (strcat *pf-xing-lead* " X") *pf-xing-flip*)
+  (foreach nm (list *pf-xing-id-x* *pf-xing-id-y* *pf-xing-od-x* *pf-xing-od-y*
+                    (strcat *pf-xing-lead* " X") (strcat *pf-xing-lead* " Y"))
     (if (pfl:dynprop obj nm)
       (pfl:say (strcat "    ok    " nm "  = " (vl-princ-to-string (pfl:dynprop-get obj nm))))
       (progn (setq ok nil) (pfl:say (strcat "    MISSING  " nm)))))
-  ;; PFDIA scales the ellipse from the insertion point: its bottom stays put
-  (setq ell (vl-some '(lambda (sd) (if (= "ELLIPSE" (cdr (assoc 0 sd))) sd)) (pfl:block-ents e nil)))
+  (if (and (setq p (pfl:visprop obj))
+           (member *pf-xing-state-wall* (mapcar 'strcase (pfl:allowed p)))
+           (member *pf-xing-state-nowall* (mapcar 'strcase (pfl:allowed p))))
+    (pfl:say (strcat "    ok    visibility " (vla-get-PropertyName p) ": " (pfl:join-with " / " (pfl:allowed p))))
+    (progn (setq ok nil) (pfl:say "    MISSING  a visibility parameter with WALL ON and WALL OFF")))
+  (pfl:say "  Deferred (the station line)")
+  (foreach nm (list *pf-xing-top* *pf-xing-bot*)
+    (if (pfl:dynprop obj nm)
+      (pfl:say (strcat "    present  " nm))
+      (setq deferred (cons nm deferred))))
+  (foreach tg *pf-xing-deferred-tags*
+    (if (pfr:attr-ent e tg) (pfl:say (strcat "    present  " tg)) (setq deferred (cons tg deferred))))
+  (if deferred (pfl:say (strcat "    DEFERRED  " (pfl:join-with ", " (reverse deferred)) " -- not in the block yet")))
+  ;; the behaviour, on a temporary copy
+  (setq c (vl-catch-all-apply 'vla-Copy (list obj)))
+  (if (and ok (not (vl-catch-all-error-p c)))
+    (progn
+      (setq ce (vlax-vla-object->ename c))
+      (pfl:say "  Sizing (PFXLABEL's pfk:size): X = dia / 24, Y = X x exaggeration, inner invert ON the insertion point")
+      (foreach t1 '((15.0 19.5 10.0) (24.0 30.0 10.0) (12.0 16.0 10.0) (15.0 19.5 5.0))
+        (setq want (list (/ (car t1) 24.0) (* (/ (car t1) 24.0) (caddr t1))
+                         (/ (cadr t1) 24.0) (* (/ (cadr t1) 24.0) (caddr t1)))
+              why  (pfk:size ce want))
+        (pfl:say (strcat "    " (if (= why T) "ok  " "FAIL") "  " (rtos (car t1) 2 0) "\" / " (rtos (cadr t1) 2 1)
+                         "\" OD at x" (rtos (caddr t1) 2 0) (if (= why T) "" (strcat ": " why))))
+        (if (/= why T) (setq ok nil)))
+      ;; pfk:ellipses reads them in the block's order: the inner must come first
+      (vl-catch-all-apply 'vla-ResetBlock (list c))
+      (pfk:wall c *pf-xing-state-wall*)
+      (setq el (pfk:ellipses ce))
+      (if (and (= 2 (length el)) (< (car (car el)) (car (cadr el))) (< (cadr (car el)) (cadr (cadr el))))
+        (pfl:say "    ok    the inside ellipse is the block's first (and the smaller, as drafted)")
+        (progn (setq ok nil) (pfl:say "    FAIL  the block's first ellipse must be the inside one -- redraw it first, or swap their order")))
+      (pfl:say "  Independent X / Y (each from the drafted state)")
+      (foreach t2 (list (list *pf-xing-id-x* 0 "width") (list *pf-xing-id-y* 0 "height")
+                        (list *pf-xing-od-x* 1 "width") (list *pf-xing-od-y* 1 "height"))
+        (vl-catch-all-apply 'vla-ResetBlock (list c))
+        (pfk:wall c *pf-xing-state-wall*)
+        (setq el (nth (cadr t2) (pfk:ellipses ce)) v0 (pfl:dynprop-get c (car t2)))
+        (pfd:prop-put (pfl:dynprop c (car t2)) (* 2.0 v0))
+        (setq def (nth (cadr t2) (pfk:ellipses ce)))
+        (cond
+          ((or (null el) (null def)) (setq ok nil) (pfl:say (strcat "    FAIL  " (car t2) ": no ellipse to measure")))
+          ((and (= (caddr t2) "width") (equal (car def) (* 2.0 (car el)) 1e-4) (equal (cadr def) (cadr el) 1e-4))
+           (pfl:say (strcat "    ok    " (car t2) " x2 doubles the width only")))
+          ((and (= (caddr t2) "height") (equal (cadr def) (* 2.0 (cadr el)) 1e-4) (equal (car def) (car el) 1e-4))
+           (pfl:say (strcat "    ok    " (car t2) " x2 doubles the height only")))
+          (T (setq ok nil)
+             (pfl:say (strcat "    FAIL  " (car t2) " x2: " (pfl:fix (car el) 3) " x " (pfl:fix (cadr el) 3) " -> "
+                              (pfl:fix (car def) 3) " x " (pfl:fix (cadr def) 3)
+                              " -- its scale action must change the " (caddr t2) " only")))))
+      ;; the inner invert follows PFID_Y alone
+      (vl-catch-all-apply 'vla-ResetBlock (list c))
+      (pfd:prop-put (pfl:dynprop c *pf-xing-id-y*) (* 2.0 (pfl:dynprop-get c *pf-xing-id-y*)))
+      (setq el (car (pfk:ellipses ce)))
+      (if (and el (equal (cadddr el) (cadr el) 1e-4))
+        (pfl:say (strcat "    ok    " *pf-xing-id-y* " x2 keeps the inner invert on the insertion point"))
+        (progn (setq ok nil) (pfl:say (strcat "    FAIL  " *pf-xing-id-y* " x2 moves the inner invert off the insertion point"))))
+      (pfl:say "  The wall")
+      (foreach st (list *pf-xing-state-wall* *pf-xing-state-nowall*)
+        (pfk:wall c st)
+        (setq def   (pfb:xing-def-ents ce)
+              el    (vl-remove-if-not '(lambda (x) (= (car x) "ELLIPSE")) def)
+              hatch (vl-some '(lambda (x) (if (= (car x) "HATCH") x)) def))
+        (if (if (= st *pf-xing-state-wall*)
+              (and hatch (not (cadr hatch)) (= 2 (length (vl-remove-if 'cadr el))))
+              (and hatch (cadr hatch) (= 1 (length (vl-remove-if 'cadr el)))))
+          (pfl:say (strcat "    ok    " st (if (= st *pf-xing-state-wall*)
+                                             ": both ellipses and the hatch show"
+                                             ": the inside ellipse only")))
+          (progn (setq ok nil) (pfl:say (strcat "    FAIL  " st ": the ellipses / hatch shown aren't right")))))
+      (pfk:wall c *pf-xing-state-wall*)
+      (pfk:size ce (list 1.0 10.0 1.25 12.5))
+      (setq hatch (vl-some '(lambda (x) (if (= (car x) "HATCH") x)) (pfb:xing-def-ents ce)))
+      (if (null hatch)
+        (progn (setq ok nil) (pfl:say "    FAIL  no hatch in the block"))
+        (progn
+          (setq bb (vl-catch-all-apply
+                     '(lambda ( / a b)
+                        (vla-GetBoundingBox (vlax-ename->vla-object (cdr (assoc -1 (caddr hatch)))) 'a 'b)
+                        (list (vlax-safearray->list a) (vlax-safearray->list b)))
+                     nil)
+                el (cadr (pfk:ellipses ce)))
+          (cond
+            ((or (vl-catch-all-error-p bb) (null el))
+             (setq ok nil) (pfl:say "    FAIL  the hatch's extent can't be read"))
+            ((and (equal (- (car (cadr bb)) (car (car bb))) (* 2.0 (car el)) 1e-3)
+                  (equal (- (cadr (cadr bb)) (cadr (car bb))) (* 2.0 (cadr el)) 1e-3))
+             (pfl:say "    ok    the hatch fills the wall after a resize to 24\" / 30\""))
+            (T
+             (setq ok nil)
+             (pfl:say (strcat "    FAIL  after a resize to 24\" / 30\" the hatch is " (pfl:fix (- (car (cadr bb)) (car (car bb))) 3)
+                              " x " (pfl:fix (- (cadr (cadr bb)) (cadr (car bb))) 3) ", the wall " (pfl:fix (* 2.0 (car el)) 3)
+                              " x " (pfl:fix (* 2.0 (cadr el)) 3) " (hatch DXF 71 = "
+                              (vl-prin1-to-string (cdr (assoc 71 (caddr hatch))))
+                              ") -- put the hatch in both size actions' selections, or keep it associative"))))))
+      (vla-Delete c))
+    (if (not (vl-catch-all-error-p c)) (vla-Delete c)))
+  (pfl:say "")
   (cond
-    ((null ell) (setq ok nil) (pfl:say "    FAIL  no ellipse in the block"))
-    ((setq p (pfl:dynprop obj *pf-xing-dia*))
-     (setq v0 (pfl:prop-get p)
-           b0 (pfl:bbox obj))
-     (setq r (pfd:prop-put p (* 2.0 v0))
-           b1 (pfl:bbox obj))
-     (pfd:prop-put p v0)
-     (pfl:say (strcat "    " *pf-xing-dia* " x2: the block grows "
-                      (if (and b0 b1) (rtos (- (cadddr b1) (cadddr b0)) 2 3) "?") " up, "
-                      (if (and b0 b1) (rtos (- (cadr b0) (cadr b1)) 2 3) "?") " down"
-                      (if (= r T) "" (strcat "  (" r ")"))))
-     (pfl:say "      (up should be about the ellipse's height x10 per foot; down 0 -- check by eye)")))
-  (foreach tp (list *pf-xing-top* *pf-xing-bot*)
-    (if (setq p (pfl:dynprop obj tp))
-      (progn
-        (setq v0 (pfl:prop-get p) b0 (pfl:station-line e))
-        (pfd:prop-put p (+ v0 1.0))
-        (setq b1 (pfl:station-line e))
-        (pfd:prop-put p v0)
-        (pfl:say (strcat "    " tp " +1 moves the station line's "
-                         (cond ((null (and b0 b1)) "?? (no station line at X 0)")
-                               ((> (abs (- (cadr b1) (cadr b0))) 1e-6) "top")
-                               ((> (abs (- (car b1) (car b0))) 1e-6) "bottom")
-                               (T "NOTHING -- check its stretch")))))))
-  ok)
+    ((and ok (null deferred)) (pfl:say "  PFSUITE_CROSSING: the whole contract holds."))
+    (ok (pfl:say "  PFSUITE_CROSSING: what is built holds -- the FINAL GATE IS NOT PASSED: the station line is deferred."))
+    (T (pfl:say "  PFSUITE_CROSSING: FAILED -- see above.")))
+  (and ok (null deferred)))
 
 (defun c:PFGATE ( / e obj nm ok)
   (cond
@@ -2732,7 +2832,10 @@
      (setq a (pfb:st-plan 300.0 0.0) j (pfb:st-plan 600.0 0.0) b (pfb:st-plan 800.0 0.0))
      (pfb:yw-put 'plans (list a j b))
      (setq r (pfb:hush 'pfa:run (list (list a j b) nil nil)))
-     (pfb:st "3 new structures assigned" (car r) '(3 0 0 0 0) nil)
+     ;; the five counts; V6.1 appends what the palette reports apart from them
+     (pfb:st "3 new structures assigned" (list (nth 0 (car r)) (nth 1 (car r)) (nth 2 (car r))
+                                              (nth 3 (car r)) (nth 4 (car r)))
+             '(3 0 0 0 0) nil)
      (pfb:st "numbered by station along the line" (mapcar '(lambda (e) (pfr:get e *pf-tag-name*)) (list a b))
              '("YA-1" "YA-3") nil)
      (pfb:st "a junction: both lines, A-Z" (pfr:get j *pf-tag-name*) "YA-2/YB-1" nil)
@@ -3059,16 +3162,20 @@
      (pfb:st "panel: its .cl" (cdr (assoc "Centerline (.cl)" (pfw:file-rows ya))) "STORM_YA.cl" nil)
      (pfb:st "panel: a stub's .pro pair" (cdr (assoc "Invert _INV .pro" (pfw:file-rows yc))) "STORM_YC_INV.pro" nil)
      (pfb:st "panel: nothing bound reads (not set)" (cdr (assoc "Existing .tin" (pfw:file-rows ya))) "(not set)" nil)
-     ;; the refusals -- a button that does nothing must say why
-     (setq *pfw-sel-run* nil r (pfb:hush 'pfw:need (list 'run 'any)))
+     ;; the refusals -- a button that does nothing must say why.  V6.1: the
+     ;; one pick is the line's NAME, shared by both tabs (pfw:require)
+     (pfw:db-forget)
+     (setq *pfw-sel-line* nil r (pfb:hush 'pfw:require (list 'line)))
      (pfb:st "a button with no line picked -- refused, and said" (list (car r) (pfb:heard-p "*pick a line*" (cdr r)))
              '(nil T) nil)
-     (setq *pfw-sel-run* yc r (pfb:hush 'pfw:need (list 'run 'grid)))
+     (setq *pfw-sel-line* "STORM_YC" r (pfb:hush 'pfw:require (list 'grid)))
      (pfb:st "New Structure on a line with no grid -- refused, and said"
              (list (car r) (pfb:heard-p "*no grid yet*" (cdr r))) '(nil T) nil)
-     (setq *pfw-sel-setup* ya r (pfb:hush 'pfw:need (list 'setup 'stub)))
-     (pfb:st "Anchor on a line that has a grid -- refused, use Edit"
-             (list (car r) (pfb:heard-p "*use Edit*" (cdr r))) '(nil T) nil)
+     (setq *pfw-sel-line* "STORM_YA" r (pfb:hush 'pfw:require (list 'grid)))
+     (pfb:st "a gridded line picked by name -- its row" (nth 2 (car r)) "STORM_YA" nil)
+     (setq *pfw-sel-line* "STORM_YQ" r (pfb:hush 'pfw:require (list 'line)))
+     (pfb:st "a picked line no longer in the drawing -- refused, and said"
+             (list (car r) (pfb:heard-p "*no longer in this drawing*" (cdr r))) '(nil T) nil)
      ;; the Run tab's structure list and Edit Attributes (2026-11-13).  By now
      ;; YA holds YA-1 (sta 300) and YA-2 (sta 600), both placed.
      (setq a (car (pfb:yw 'plans)) j (cadr (pfb:yw 'plans)))
@@ -3088,6 +3195,15 @@
         (pfd:move d (pfb:ya-pt 910.0 0.0))
         (pfb:st "status: moved since Assign" (cadddr (assoc d (pfw:struct-rows "STORM_YA"))) "moved since Assign" nil)
         (pfd:erase d)
+        ;; V6.1: Setup's words, read off the drawing -- not a command's counts
+        (pfw:db-forget)
+        (setq *pfw-lines* (pfw:db-get 'lines) *pfw-sel-line* "STORM_YA")
+        (pfb:st "Setup's list: YA ready, with its count" (pfw:line-word (pfw:sel-row)) "Ready -- 2 assigned" nil)
+        (pfb:st "...its words: \"2 structures assigned to Line 'YA'.\""
+                (pfb:wc (pfw:setup-text) "2 structures assigned to Line 'YA'.*") T nil)
+        (setq *pfw-sel-line* "STORM_YC")
+        (pfb:st "...a line an old Scan named: no grid" (pfb:wc (pfw:line-word (pfw:sel-row)) "No grid*") T nil)
+        (setq *pfw-sel-line* nil)
         ;; the combined list maps a click to the entity, even with pipes mixed in
         (setq *pfw-items* (list (list 'structure a "YA-1" 300.0 300.0 "placed")
                                 (list 'structure j "YA-2" 600.0 600.0 "placed")))
@@ -3095,12 +3211,14 @@
         (pfb:st "row pick: the second row" (cadr (pfw:run-row-at 1)) j nil)
         (pfb:st "row pick: no row (-1) -- nothing" (pfw:run-row-at -1) nil nil)
         (pfb:st "row pick: past the end -- nothing" (pfw:run-row-at 9) nil nil)
-        (setq *pfw-sel-struct* nil *pfw-sel-pipe* nil
+        ;; V6.1: the pick is (kind handle line) -- never an entity kept
+        (setq *pfw-sel-line* "STORM_YA" *pfw-sel-item* nil
               r (pfb:hush 'pfw:on-item (list 0)))
-        (pfb:st "a row picked -- recorded, and said" (list *pfw-sel-struct* (pfb:heard-p "*YA-1 picked*" (cdr r)))
-                (list a T) nil)
+        (pfb:st "a row picked -- kept by kind and handle, and said"
+                (list *pfw-sel-item* (pfb:heard-p "*YA-1 picked*" (cdr r)))
+                (list (list 'structure (pfl:handle a) "STORM_YA") T) nil)
         (pfb:hush 'pfw:on-item (list -1))
-        (pfb:st "...a click on no row after it doesn't wipe the pick" *pfw-sel-struct* a nil)
+        (pfb:st "...a click on no row after it doesn't wipe the pick" (cadr *pfw-sel-item*) (pfl:handle a) nil)
         (if (setq prows (pfw:pipe-rows "STORM_YA"))
           (progn
             (setq *pfw-items* (list (list 'structure a "YA-1" 300.0 300.0 "placed")
@@ -3108,25 +3226,34 @@
                                     (list 'structure j "YA-2" 600.0 600.0 "placed")))
             (pfb:hush 'pfw:on-item (list 1))
             (pfb:st "interleaved pipe row selects the pipe, not a structure"
-                    (list *pfw-sel-pipe* *pfw-sel-struct*)
-                    (list (caar prows) nil) nil)
+                    (list (car *pfw-sel-item*) (cadr *pfw-sel-item*))
+                    (list 'pipe (pfl:handle (caar prows))) nil)
             (pfb:hush 'pfw:on-item (list 2))
             (pfb:st "structure after pipe still selects the structure"
-                    (list *pfw-sel-struct* *pfw-sel-pipe*) (list j nil) nil)))
-        (setq *pfw-sel-run* ya *pfw-sel-struct* nil *pfw-sel-pipe* nil
-              r (pfb:hush 'pfw:need-edit-target nil))
+                    (list (car *pfw-sel-item*) (cadr *pfw-sel-item*)) (list 'structure (pfl:handle j)) nil)))
+        ;; Edit Attributes' target: the pick checked again by its handle
+        (setq *pfw-sel-item* nil r (pfb:hush 'pfw:edit-target nil))
         (pfb:st "Edit Attributes with no item picked -- refused, and said"
                 (list (car r) (pfb:heard-p "*pick a structure*" (cdr r))) '(nil T) nil)
         ;; 2026-11-20: it once returned T, not the item (AutoLISP's or), and
         ;; Edit Attributes stopped on "lentityp T" with a structure picked.
-        (setq *pfw-sel-struct* a r (pfb:hush 'pfw:need-edit-target nil))
+        (setq *pfw-sel-item* (list 'structure (pfl:handle a) "STORM_YA") r (pfb:hush 'pfw:edit-target nil))
         (pfb:st "Edit Attributes with a structure picked -- hands back that structure" (car r) a nil)
+        (setq *pfw-sel-item* (list 'structure (pfl:handle a) "STORM_YB") r (pfb:hush 'pfw:edit-target nil))
+        (pfb:st "...an item picked on ANOTHER line -- refused" (car r) nil nil)
         (if prows
           (progn
-            (setq *pfw-sel-struct* nil *pfw-sel-pipe* (caar prows)
-                  r (pfb:hush 'pfw:need-edit-target nil))
-            (pfb:st "Edit Attributes with a pipe picked -- hands back that pipe" (car r) (caar prows) nil)))
-        (setq *pfw-sel-struct* nil *pfw-sel-pipe* nil)
+            (setq *pfw-sel-item* (list 'pipe (pfl:handle (caar prows)) "STORM_YA")
+                  r (pfb:hush 'pfw:edit-target nil))
+            (pfb:st "Edit Attributes with a pipe picked -- hands back that pipe" (car r) (caar prows) nil)
+            (setq *pfw-sel-item* (list 'crossing (pfl:handle (caar prows)) "STORM_YA")
+                  r (pfb:hush 'pfw:edit-target nil))
+            (pfb:st "...a handle that isn't the kind picked -- refused, and said"
+                    (list (car r) (pfb:heard-p "*no longer what was picked*" (cdr r))) '(nil T) nil)))
+        (pfb:st "the edit paths, by kind -- a crossing never takes the pipe's"
+                (mapcar 'pfw:edit-work '(structure pipe crossing other))
+                '(pfw:do-edit-struct pfw:do-edit-pipe pfw:do-edit-crossing nil) nil)
+        (setq *pfw-sel-item* nil)
         ;; Edit Attributes opens the plan block, then its copy on the line
         (pfb:st "Edit Attributes finds the structure's copy on the picked line"
                 (pfw:struct-copy a "STORM_YA") (pfb:yw-copy a "STORM_YA") nil)
@@ -3142,8 +3269,7 @@
                 (pfb:wc (pfr:get (pfb:yw-copy a "STORM_YA") "PFSTA1") "STN. *") T nil)
         (pfb:st "...the other copy keeps its own prefix"
                 (pfb:wc (pfr:get (pfb:yw-copy j "STORM_YA") "PFSTA1") "STA. *") T nil)))
-     (setq *pfw-sel-run* nil *pfw-sel-setup* nil *pfw-sel-struct* nil
-           *pfw-sel-pipe* nil *pfw-items* nil))))
+     (setq *pfw-sel-line* nil *pfw-sel-item* nil *pfw-items* nil *pfw-lines* nil))))
 
 ;; --- group 13: saved defaults (pf-defaults) -----------------------------------
 ;;   The look-up order on a made-up type and utility, so no real saved default
@@ -3658,12 +3784,19 @@
            (pfb:st "...the clearance, outside to outside" (distof (pfr:get x *pf-xing-clr*) 2) clr 0.02)
            (pfb:st "...V5's label" (list (pfr:get x *pf-xing-label*) (pfr:get x *pf-xing-label2*))
                    '("PROP. WATER MAIN 'YW'" "12\" RCP III") nil)
-           (pfb:st "...station text" (pfr:get x *pf-xing-sta*) "4+50.00 PROP. WATER CROSSING" nil)
+           ;; 2026-11-22: the block of two ellipses -- the station text is DEFERRED
+           (if (pfr:attr-ent x *pf-xing-sta*)
+             (pfb:st "...station text" (pfr:get x *pf-xing-sta*) "4+50.00 PROP. WATER CROSSING" nil)
+             (pfl:say "  DEFERRED  station text (PFSTA1 isn't in the block yet)"))
+           (pfb:st "...drawn its size: 12 in. ID / 16 in. OD, x vertically, invert on the insertion point"
+                   (pfk:size-off x (list 0.5 (* 0.5 (pfl:g 'vscale g)) (/ 16.0 24.0) (* (/ 16.0 24.0) (pfl:g 'vscale g))))
+                   nil nil)
+           (pfb:st "...the OD known: WALL ON" (pfp:state-now (vlax-ename->vla-object x)) *pf-xing-state-wall* nil)
            (pfb:st "...near the minimum: dimension, two ticks, the note" (length (pfk:extras-of x (pfk:extras))) 4 nil)
            (pfb:st "...not red" (cdr (assoc 62 (entget x))) nil nil)
            (setq lead (pfp:pt-get x *pf-xing-lead*))
            (if lead
-             (pfb:st "...label on the left by default" (< (car lead) (car (pfl:ins x))) T nil)
+             (pfb:st "...label on the RIGHT by default" (> (car lead) (car (pfl:ins x))) T nil)
              (pfl:say (strcat "  SKIP  no " *pf-xing-lead* " grip on the block")))
            ;; the crossing pipe raised: short of the minimum
            (pfd:move yw-pipe (list (car (pfl:ins yw-pipe)) (+ (cadr (pfl:ins yw-pipe)) (* 0.3 (pfl:g 'vscale gw)))))
@@ -3684,7 +3817,7 @@
                (if lv
                  (pfb:st "...its arrow 1 unit off the ellipse, half way up"
                          (cdr (assoc 10 (entget lv)))
-                         (list (+ (car (pfl:ins x)) 0.5 (* *pf-xing-arrow-off* (/ (pfl:g 'hplot g) *pf-ref-hplot*)))
+                         (list (+ (car (pfl:ins x)) (car (last (pfk:ellipses x))) (* *pf-xing-arrow-off* (/ (pfl:g 'hplot g) *pf-ref-hplot*)))
                                (+ (cadr (pfl:ins x)) (/ (* 1.0 (pfl:g 'vscale g)) 2.0)))
                          0.01))))
            (setq r (pfb:yw-refresh))
@@ -3821,14 +3954,14 @@
         (pfw:db-forget)
         (pfb:st "after Refresh Line -- nothing on YA needs refresh"
                 (mapcar '(lambda (x) (nth 2 x))
-                        (vl-remove-if-not '(lambda (x) (= (nth 5 x) "needs refresh")) (pfw:run-rows "STORM_YA")))
+                        (vl-remove-if-not '(lambda (x) (wcmatch (nth 5 x) "needs refresh*")) (pfw:run-rows "STORM_YA")))
                 nil nil)
         (setq rim (pfr:get a *pf-tag-rim*))
         (pfr:put a *pf-tag-rim* "")
         (pfl:say (strcat "  INFO  a change emptied the list straight away (the reactor): "
                          (if *pfw-db* "no -- AutoCAD runs it after this command" "yes")))
         (pfw:db-forget)
-        (pfb:st "a rim cleared -- needs refresh" (pfb:sp-status a "STORM_YA") "needs refresh" nil)
+        (pfb:st "a rim cleared -- needs refresh, the status kept after it" (pfb:sp-status a "STORM_YA") "needs refresh; at grid top (no rim)" nil)
         (pfr:put a *pf-tag-rim* rim)
         (pfw:db-forget)
         (pfb:st "...the rim put back as it was -- up to date again" (pfb:sp-status a "STORM_YA") "placed" nil)
@@ -3836,7 +3969,7 @@
           (progn
             (pfr:put a *pf-tag-rim* (pfl:fix (+ 2.0 (distof rim 2)) 2))
             (pfw:db-forget)
-            (pfb:st "a rim changed -- needs refresh" (pfb:sp-status a "STORM_YA") "needs refresh" nil)
+            (pfb:st "a rim changed -- needs refresh" (wcmatch (pfb:sp-status a "STORM_YA") "needs refresh*") T nil)
             (pfb:sp-refresh)
             (pfw:db-forget)
             (pfb:st "...Refresh Line -- placed" (pfb:sp-status a "STORM_YA") "placed" nil)
@@ -3850,10 +3983,10 @@
             (setq ins (pfl:ins p))
             (pfd:move p (list (car ins) (+ (cadr ins) 0.5)))
             (pfw:db-forget)
-            (pfb:st "a pipe moved -- needs refresh" (pfb:sp-status p "STORM_YA") "needs refresh" nil)
+            (pfb:st "a pipe moved -- needs refresh" (wcmatch (pfb:sp-status p "STORM_YA") "needs refresh*") T nil)
             (pfb:sp-refresh)
             (pfw:db-forget)
-            (pfb:st "...Refresh Line -- not any more" (/= (pfb:sp-status p "STORM_YA") "needs refresh") T nil)
+            (pfb:st "...Refresh Line -- not any more" (wcmatch (pfb:sp-status p "STORM_YA") "needs refresh*") nil nil)
             (pfd:move p ins)
             (pfb:sp-refresh)))
         (pfw:db-forget))))))
@@ -3867,6 +4000,231 @@
 ;; (pfb:sp-status e lname) -> e's status in the palette's Run list for lname
 (defun pfb:sp-status (e lname)
   (nth 5 (vl-some '(lambda (x) (if (eq (cadr x) e) x)) (pfw:run-rows lname))))
+
+;; --- group 21: drawing settings (V6.1) ------------------------------------------
+;;   One value per drawing.  A V6.0 line or utility value is never used --
+;;   only listed, and retired by Save.  Runs on this drawing's own records
+;;   and puts every one of them back afterwards.
+
+;; (pfb:settings-snapshot) -> this drawing's settings records, sorted
+(defun pfb:settings-snapshot ( / d)
+  (list (cons 'had (if (setq d (pfv:settings-dict nil)) T))
+        (cons 'keys (if d (vl-sort (mapcar '(lambda (k) (cons k (pfv:settings-raw k))) (pfl:dict-keys d))
+                                   '(lambda (a b) (< (car a) (car b))))))
+        (cons 'legacy (vl-sort (pfv:legacy-settings) '(lambda (a b) (< (nth 4 a) (nth 4 b)))))))
+
+;; (pfb:settings-restore snap) -> nil   the records exactly as snapped
+(defun pfb:settings-restore (snap / d)
+  (if (setq d (pfv:settings-dict nil))
+    (foreach k (pfl:dict-keys d) (pfv:settings-remove d k)))
+  (if (and d (not (cdr (assoc 'had snap))))
+    (progn (dictremove (namedobjdict) *pf-settings-dict*) (entdel d)))
+  (if (cdr (assoc 'had snap))
+    (foreach kv (cdr (assoc 'keys snap))
+      (pfr:xrec-put (pfv:settings-dict T) (car kv) (list (cons 1 (cond ((cdr kv)) ("")))))))
+  (foreach r (pfv:legacy-settings) (pfv:reset (car r) (cadr r) *pf-setting-kind* "" (nth 2 r)))
+  (foreach r (cdr (assoc 'legacy snap)) (pfv:save (car r) (cadr r) *pf-setting-kind* "" (nth 2 r) (nth 3 r)))
+  (princ))
+
+(defun pfb:st-settings-work ( / d five)
+  ;; a clean slate: no V6.1 record, no V6.0 SETTING record
+  (if (setq d (pfv:settings-dict nil)) (progn (dictremove (namedobjdict) *pf-settings-dict*) (entdel d)))
+  (foreach r (pfv:legacy-settings) (pfv:reset (car r) (cadr r) *pf-setting-kind* "" (nth 2 r)))
+  (setq five '("PFSLOPEMIN" "PFCOVERMIN" "PFCLRMIN" "PFCLRWARN" "PFPLANHT"))
+  (pfb:st "nothing saved: no slope or cover check; 18\", 6\", 2.4 built in"
+          (mapcar 'pfv:setting five) '(nil nil 18.0 6.0 2.4) 1e-9)
+  (pfv:save "" "" *pf-setting-kind* "" "PFCLRMIN" "20")
+  (pfv:save "STORM" "STORM_PFTESTZZ" *pf-setting-kind* "" "PFCLRMIN" "24")
+  (pfv:save "STORM" "" *pf-setting-kind* "" "PFCLRWARN" "9")
+  (pfb:st "a V6.0 DRAWING value is read until V6.1 saves" (pfv:setting "PFCLRMIN") 20.0 1e-9)
+  (pfb:st "...a V6.0 LINE value is never used, not even for its own line"
+          (pfk:setting "PFCLRMIN" "STORM_PFTESTZZ") 20.0 1e-9)
+  (pfb:st "...nor a UTILITY value" (pfv:setting "PFCLRWARN") 6.0 1e-9)
+  (pfb:st "...both listed as ignored (said, never silent)" (length (pfv:ignored-settings)) 2 nil)
+  (pfb:st "...where each value comes from" (mapcar 'pfv:setting-source '("PFCLRMIN" "PFCLRWARN" "PFSLOPEMIN"))
+          '(v60 builtin unset) nil)
+  ;; Save: the migration
+  (pfb:st "Save writes" (pfv:settings-save '(("PFSLOPEMIN" . "0.5") ("PFCOVERMIN" . "") ("PFCLRMIN" . "22")
+                                             ("PFCLRWARN" . "") ("PFPLANHT" . "3")))
+          T nil)
+  (pfb:st "...FORMAT 1" (pfv:settings-format) 1 nil)
+  (pfb:st "...the values; blank = the built-in, or no check" (mapcar 'pfv:setting five) '(0.5 nil 22.0 6.0 3.0) 1e-9)
+  (pfb:st "...the line and utility values retired" (pfv:ignored-settings) nil nil)
+  (pfb:st "...kept on record"
+          (pfv:settings-raw (strcat "LEGACY_" (pfv:key "STORM" "STORM_PFTESTZZ" *pf-setting-kind* "" "PFCLRMIN"))) "24" nil)
+  (pfb:st "...the V6.0 drawing value archived as it was"
+          (pfv:settings-raw (strcat "LEGACY_" (pfv:key "" "" *pf-setting-kind* "" "PFCLRMIN"))) "20" nil)
+  (pfb:st "...and set to the new value, so V6.0 code reads the same"
+          (list (pfv:raw "" "" *pf-setting-kind* "" "PFCLRMIN") (pfv:raw "" "" *pf-setting-kind* "" "PFCLRWARN"))
+          '("22" nil) nil)
+  (pfv:settings-save '(("PFSLOPEMIN" . "0.5") ("PFCOVERMIN" . "") ("PFCLRMIN" . "25") ("PFCLRWARN" . "") ("PFPLANHT" . "3")))
+  (pfb:st "a second Save keeps the FIRST archive of the V6.0 value"
+          (pfv:settings-raw (strcat "LEGACY_" (pfv:key "" "" *pf-setting-kind* "" "PFCLRMIN"))) "20" nil)
+  (pfb:st "...the new value used, by crossings too" (pfk:setting "PFCLRMIN" "STORM_PFTESTZZ") 25.0 1e-9)
+  (pfb:st "the plan label height is the drawing's" (pfm:plan-label-ht nil) 3.0 1e-9)
+  (pfr:xrec-put (pfv:settings-dict nil) "FORMAT" (list (cons 1 "9")))
+  (pfb:st "a FORMAT from a newer PFSUITE -- Save refuses" (pfv:settings-save '(("PFCLRMIN" . "30"))) nil nil)
+  (pfb:st "...nothing written" (pfv:setting "PFCLRMIN") 25.0 1e-9))
+
+(defun pfb:st-settings ( / snap r)
+  (pfl:say "")
+  (pfl:say "  21. Drawing settings (one value per drawing; old line values never used)")
+  (pfb:st "a defaults key read back" (pfv:key-parts (pfv:key "STORM" "STORM_BA" "SETTING" "" "PFCLRMIN"))
+          '("STORM" "STORM_BA" "SETTING" "" "PFCLRMIN") nil)
+  (pfb:st "...a key that isn't one -- nil, never guessed"
+          (list (pfv:key-parts "DEFAULTS") (pfv:key-parts "D2_AB3_X") (pfv:key-parts "Dx_A")) '(nil nil nil) nil)
+  (setq snap (pfb:settings-snapshot)
+        r    (vl-catch-all-apply 'pfb:st-settings-work nil))
+  (pfb:settings-restore snap)
+  (if (vl-catch-all-error-p r)
+    (progn (setq n-fail (1+ n-fail))
+           (pfl:say (strcat "  FAIL  the settings checks stopped: " (vl-catch-all-error-message r)))))
+  (pfb:st "...this drawing's own settings put back" (pfb:settings-snapshot) snap nil))
+
+;; --- group 22: Delete Line (V6.1) ----------------------------------------------
+;;   A STORM test line of its own, YV: it starts ON YA at YA 7+00 (a junction
+;;   structure there) and bends back across YA at YA 5+00 (a crossing).
+;;   Delete Line takes YV out of PFSUITE: its anchor goes, the junction keeps
+;;   YA under its new name, and what the suite made for YV -- its pipe, the
+;;   crossing marks on BOTH grids and what was drawn for them -- stays,
+;;   released.  PFREFRESH and PFXLABEL afterwards must leave all of that
+;;   exactly as it was.  One UNDO is checked by hand (FIRST-VERSION-TESTS).
+
+;; (pfb:dl-snap ents) -> what a later run must not change, per entity
+(defun pfb:dl-snap (ents)
+  (mapcar '(lambda (e)
+             (if (pfb:live e)
+               (list e (cdr (assoc 10 (entget e))) (cdr (assoc 62 (entget e)))
+                     (if (pfk:xing-p e) (pfr:get e *pf-xing-clr*)) (pfr:stamp-get e))
+               (list e 'gone)))
+          ents))
+
+(defun pfb:st-delete-line ( / cl va g gv jv plans ya-pipe yv-pipe fp r xa xv ex keep rel)
+  (pfl:say "")
+  (pfl:say "  22. Delete Line (the anchor goes; everything else stays, released)")
+  (cond
+    ((null (pfb:yw 'aya)) (pfl:say "  SKIP  the test grids weren't made (group 6)"))
+    ((not (tblsearch "BLOCK" *pf-xing-block*))
+     (pfl:say (strcat "  SKIP  no " *pf-xing-block* " in this drawing -- insert it once")))
+    (T
+     (setq cl (pfb:st-cl (strcat (pfb:yw 'dir) "STORM_YV.cl")
+                         (list (list 0.0   (+ *pfb-x0* 600.0) *pfb-y0*)
+                               (list 100.0 (+ *pfb-x0* 600.0) (+ *pfb-y0* 100.0))
+                               (list 300.0 (+ *pfb-x0* 400.0) (+ *pfb-y0* 100.0))
+                               (list 500.0 (+ *pfb-x0* 400.0) (- *pfb-y0* 100.0))))
+           va (pfn:place-rec (pfb:yw-rec "YV" cl (list (list (+ *pfb-x0* 2000.0) (+ *pfb-y0* 6000.0))
+                                                    (list (+ *pfb-x0* 2520.0) (+ *pfb-y0* 6300.0))))
+                             nil))
+     (cond
+       ((/= (type va) 'ENAME)
+        (setq n-fail (1+ n-fail)) (pfl:say (strcat "  FAIL  anchoring STORM 'YV' -- " (vl-princ-to-string va))))
+       (T
+        (setq made  (cons va made)
+              g     (pfg:grid (pfb:yw 'aya))
+              gv    (pfg:grid va)
+              jv    (pfb:st-plan 700.0 0.0)
+              plans (append (vl-remove-if-not 'pfb:live (pfb:yw 'plans)) (list jv)))
+        (pfb:hush 'pfa:run (list plans nil nil))
+        (pfb:st "the junction is on YA and YV" (vl-sort (mapcar 'car (pfr:memb-get jv)) '<)
+                '("STORM_YA" "STORM_YV") nil)
+        (pfb:st "...named on both" (pfb:wc (pfr:get jv *pf-tag-name*) "YA-*/YV-1") T nil)
+        (setq ya-pipe (pfb:yw-pipe-on g 480.0 745.00 520.0 744.90 15.0 "RCP III")
+              yv-pipe (pfb:yw-pipe-on gv 380.0 742.05 420.0 741.95 12.0 "RCP III"))
+        (pfb:hush 'pfk:run (list "STORM_YA" (pfg:usable)))
+        (pfb:hush 'pfk:run (list "STORM_YV" (pfg:usable)))
+        (setq xa (car (vl-remove-if-not '(lambda (x) (= (caddr (pfk:rec x)) "STORM_YV")) (pfk:on-line "STORM_YA")))
+              xv (car (pfk:on-line "STORM_YV")))
+        (foreach x (list xa xv) (if x (setq made (cons x made))))
+        (pfb:st "a crossing mark on each grid" (list (and xa T) (and xv T)) '(T T) nil)
+        ;; what Delete Line will touch
+        (setq fp (pfn:line-footprint "STORM_YV"))
+        (pfb:st "footprint: the line's one anchor" (pfn:footprint 'anchors fp) (list va) nil)
+        (pfb:st "...the junction, taken off it" (pfn:footprint 'junctions fp) (list jv) nil)
+        (pfb:st "...its pipe, to release" (and (member yv-pipe (pfn:footprint 'objects fp)) T) T nil)
+        (pfb:st "...BOTH crossing marks: on its grid, and on YA's for a crossing BY it"
+                (list (and xv (member xv (pfn:footprint 'crossings fp)) T) (pfn:footprint 'others fp))
+                (list T (if xa (list xa))) nil)
+        (pfb:st "...YA's own pipe is not YV's" (and (member ya-pipe (pfn:footprint 'objects fp)) T) nil nil)
+        (setq ex   (append (if xa (pfk:extras-of xa (pfk:extras))) (if xv (pfk:extras-of xv (pfk:extras))))
+              rel  (append (vl-remove nil (list xa xv yv-pipe)) ex)
+              keep (pfb:dl-snap rel))
+        (pfb:hush 'pfn:delete-line (list fp))
+        (pfb:st "Delete Line -- the anchor erased" (pfb:live va) nil nil)
+        (pfb:st "...the line gone from the line table" (and (pfm:line-entry "STORM_YV" (car (pfm:lines))) T) nil nil)
+        (pfb:st "...the junction on YA only" (mapcar 'car (pfr:memb-get jv)) '("STORM_YA") nil)
+        (pfb:st "...renamed without YV" (pfb:wc (pfr:get jv *pf-tag-name*) "*YV*") nil nil)
+        (pfb:st "...and not \"moved since Assign\"" (pfm:stale (list jv)) nil nil)
+        (pfb:st "...the pipe, the marks and their drawn extras still there, released"
+                (vl-every '(lambda (e) (and (pfb:live e) (pfr:released-p e))) rel) T nil)
+        (pfb:st "...YA's pipe still the suite's" (pfr:released-p ya-pipe) nil nil)
+        (pfb:hush 'pfu:run (list (list "Line" "STORM_YA") nil nil))
+        (pfb:st "PFREFRESH afterwards -- what was released is unchanged" (pfb:dl-snap rel) keep nil)
+        (setq r (pfb:hush 'pfk:run (list "STORM_YA" (pfg:usable))))
+        (pfb:st "PFXLABEL on YA afterwards -- nothing placed or erased for YV"
+                (list (nth 0 (car r)) (nth 2 (car r))) '(0 0) nil)
+        (pfb:st "...what was released is still unchanged" (pfb:dl-snap rel) keep nil)))
+     ;; clean up: everything this group made, released or not
+     (foreach e (append ex (list xa xv ya-pipe yv-pipe va jv))
+       (if (pfb:live e) (vl-catch-all-apply 'pfd:erase (list e))))
+     (pfr:stub-del "STORM" "YV")
+     (if (and cl (findfile cl)) (vl-file-delete cl)))))
+
+;; --- group 24: design checks (V6.1) -- they only report ------------------------
+(defun pfb:st-design ( / p g pts dims)
+  (pfl:say "")
+  (pfl:say "  24. Design checks (minimum slope and cover; never a pipe moved)")
+  (pfb:st "slope above the minimum -- pass" (car (pfp:slope-verdict 1.0 0.5)) 'pass nil)
+  (pfb:st "...below it -- fail" (car (pfp:slope-verdict 0.3 0.5)) 'fail nil)
+  (pfb:st "UPHILL fails however steep -- the slope is signed"
+          (list (car (pfp:slope-verdict -2.0 0.5)) (pfb:wc (cadr (pfp:slope-verdict -2.0 0.5)) "*uphill*"))
+          '(fail T) nil)
+  (pfb:st "...even against a 0% minimum" (car (pfp:slope-verdict -0.1 0.0)) 'fail nil)
+  (pfb:st "both ends at one station -- can't check, not a pass" (car (pfp:slope-verdict nil 0.5)) 'unknown nil)
+  (pfb:st "cover: the lowest point governs, and is named"
+          (list (car (pfp:cover-verdict '((100.0 4.0) (150.0 2.5) (200.0 3.5)) 3.0))
+                (pfb:wc (cadr (pfp:cover-verdict '((100.0 4.0) (150.0 2.5) (200.0 3.5)) 3.0)) "*1+50*"))
+          '(fail T) nil)
+  (pfb:st "...enough cover -- pass" (car (pfp:cover-verdict '((100.0 4.0) (200.0 3.5)) 3.0)) 'pass nil)
+  (pfb:st "...a point off the DESIGN surface -- can't check, never a pass"
+          (car (pfp:cover-verdict '((100.0 9.0) (150.0 nil)) 3.0)) 'unknown nil)
+  ;; a real test pipe: cover is measured from its OUTSIDE top
+  (cond
+    ((null (pfb:yw 'aya)) (pfl:say "  SKIP  the pipe check: no test grids"))
+    ((null (setq p (car (car (pfw:pipe-rows "STORM_YA"))))) (pfl:say "  SKIP  the pipe check: no test pipe on YA"))
+    (T
+     (setq g (pfg:grid (pfb:yw 'aya)) pts (pfp:cover-points p g) dims (pfp:dims p))
+     (if (= (type pts) 'STR)
+       (pfb:st "a pipe with no OD on record -- can't check" (and (null (cadr dims)) (pfb:wc pts "*wall unknown*")) T nil)
+       (pfb:st "the outside top: invert + (ID + OD) / 24 ft, at the first end"
+               (- (cadr (car pts)) (pfl:y->elev (cadr (car (pfp:ends p))) g))
+               (/ (+ (car dims) (cadr dims)) 24.0) 1e-6)))))
+
+;; --- group 25: the palette's footer (V6.1) -------------------------------------
+(defun pfb:st-footer ( / keep st r copying copied)
+  (pfl:say "")
+  (pfl:say "  25. The palette's footer (what a run said, kept; its status read off it)")
+  ;; what a caller is copying (the palette, a CAD-pass driver) is put back after
+  (setq keep *pfw-feedback* st *pfw-status* copying *pfl-copying* copied *pfl-copied*)
+  (setq *pfl-copying* T *pfl-copied* nil)
+  (pfb:hush 'pfl:say (list "a line said"))
+  (pfb:st "while copying, a line said is kept as well" (car *pfl-copied*) "a line said" nil)
+  (setq *pfw-feedback* nil *pfw-status* nil)
+  (pfw:footer-publish "Test" (list "  ** something to look at" "fine") nil)
+  (pfb:st "a line with ** -- a warning, read off what was said"
+          (pfb:wc (car *pfw-feedback*) "=> Warning: Test finished with 1 warning*") T nil)
+  (pfw:footer-publish "Test" (list "Cancelled -- nothing written.") nil)
+  (pfb:st "\"Cancelled\" said -- Canceled" (pfb:wc (car *pfw-feedback*) "=> Canceled:*") T nil)
+  (pfw:status 'error "it broke")
+  (pfw:footer-publish "Test" nil nil)
+  (pfb:st "a status the run set wins" (car *pfw-feedback*) "=> Error: it broke" nil)
+  (setq *pfw-status* nil)
+  (setq r (length *pfw-feedback*))
+  (pfw:footer-publish "a pick" nil T)
+  (pfb:st "a quiet pick that said nothing adds nothing" (length *pfw-feedback*) r nil)
+  (repeat 200 (pfw:footer-publish "Test" (list "line") nil))
+  (pfb:st "the box keeps at most its limit" (<= (length *pfw-feedback*) *pfw-feedback-max*) T nil)
+  (setq *pfw-feedback* keep *pfw-status* st *pfl-copying* copying *pfl-copied* (append *pfl-copied* copied))
+  (pfw:feedback-paint))
 
 ;; (c:PFSELFTEST) -- run every group, clean up, total
 (defun c:PFSELFTEST ( / n-pass n-fail made doc cbi pipe-g t0 yw r)
@@ -3906,11 +4264,17 @@
          (pfb:st-run "palette"   'pfb:st-palette)
          (pfb:st-run "plan label"  'pfb:st-plabel)
          (pfb:st-run "crossings"   'pfb:st-xing)
-         (pfb:st-run "fast reads"  'pfb:st-speed)))
+         (pfb:st-run "fast reads"  'pfb:st-speed)
+         ;; V6.1 (2026-11-21)
+         (pfb:st-run "Delete Line" 'pfb:st-delete-line)
+         (pfb:st-run "design checks" 'pfb:st-design)))
      (pfb:st-run "pipe table" 'pfb:st-mats)
      ;; 13 needs no test world; 14 runs its name checks without one
      (pfb:st-run "saved defaults" 'pfb:st-defaults)
      (pfb:st-run "headwall / sanitary" 'pfb:st-blocks)
+     ;; V6.1 (2026-11-21): no test world needed
+     (pfb:st-run "drawing settings" 'pfb:st-settings)
+     (if pfw:footer-publish (pfb:st-run "footer" 'pfb:st-footer))
      ;; clean up -- the test lines' blocks, stubs and files; everything this
      ;; run made; any leader a test pipe still has (a group that stopped
      ;; part-way may leave one)

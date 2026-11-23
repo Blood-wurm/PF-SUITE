@@ -647,5 +647,187 @@
   (princ))
 
 
+;;; ==========================================================================
+;;; SECTION 9  --  Design checks: minimum slope and minimum cover (V6.1)
+;;; ==========================================================================
+;;; Jake, 2026-11-21.  ONE drawing value each (the palette's Settings tab,
+;;; pfv:setting).  Unset = no check.  The checks only REPORT -- they never
+;;; move a pipe, write an attribute or change the drawing.
+;;;
+;;; SLOPE is signed, in the flow direction: the block's base point is the
+;;; UPSTREAM invert and PFRUN the downstream one (pf-cfg), so positive = it
+;;; falls.  An uphill pipe is negative and fails any minimum -- a large
+;;; uphill slope can't pass on its size.  The same numbers as its label.
+;;;
+;;; COVER is measured to the grid's DESIGN_* TIN only -- never the existing
+;;; ground -- from the OUTSIDE TOP of the pipe, invert + (ID + OD) / 24 ft,
+;;; at both ends and the middle.  The plan point for a station is Carlson's
+;;; (the grid's .cl).  No design surface, a blank PFOD (wall unknown), or a
+;;; point off the surface: "can't check", never a pass.
+;;; Reading a TIN needs Carlson, so cover is measured only inside a command
+;;; (the palette's Refresh Line / Refresh All, pfp:check-cover) and the
+;;; answers are kept in memory for the session, each with what it was
+;;; measured from.  A pipe changed since shows "not checked yet".
+
+(if (not (boundp '*pfp-cover-memory*)) (setq *pfp-cover-memory* nil)) ; ((handle key verdict text) ...)
+
+;; (pfp:signed-slope e g) -> percent, + = falls from the upstream end | nil
+;;   (both ends at one station, or the ends can't be read)
+(defun pfp:signed-slope (e g / ends run)
+  (if (and (setq ends (pfp:ends e))
+           (> (setq run (abs (- (car (cadr ends)) (car (car ends))))) 1e-6))
+    (* 100.0 (/ (- (pfl:y->elev (cadr (car ends)) g) (pfl:y->elev (cadr (cadr ends)) g)) run))))
+
+;; (pfp:slope-verdict s smin) -> (verdict text)   pure -- PFSELFTEST's
+;;   s: signed slope | nil.  verdict 'pass 'fail 'unknown
+(defun pfp:slope-verdict (s smin)
+  (cond
+    ((null s) (list 'unknown "slope: can't check (both ends at one station)"))
+    ((< s (- smin 1e-9))
+     (list 'fail (strcat "slope " (pfl:fix s 2) "% below " (pfl:fix smin 2) "% min"
+                         (if (< s 0.0) " (runs uphill)" ""))))
+    (T (list 'pass (strcat "slope " (pfl:fix s 2) "%")))))
+
+;; (pfp:slope-check e g) -> (verdict text) | nil (no minimum set)
+(defun pfp:slope-check (e g / smin)
+  (if (setq smin (pfv:setting "PFSLOPEMIN"))
+    (pfp:slope-verdict (pfp:signed-slope e g) smin)))
+
+;; (pfp:design-tin g) -> the grid's DESIGN_* TIN, found on disk | nil
+(defun pfp:design-tin (g / tin)
+  (if (setq tin (pfl:g 'tin-design g))
+    (cond ((findfile tin)) ((pff:find-in-std tin "tin")))))
+
+;; (pfp:cover-points e g) -> ((station outside-top-elevation) ...) | why not
+;;   (a string).  Both ends and the middle.
+(defun pfp:cover-points (e g / ends dims x1 x2 e1 e2 add)
+  (setq ends (pfp:ends e) dims (pfp:dims e))
+  (cond
+    ((null ends) "can't read the pipe's ends")
+    ((null dims) "the pipe has no size")
+    ((null (cadr dims)) "wall unknown (PFOD blank)")
+    (T
+     (setq add (/ (+ (car dims) (cadr dims)) 24.0)
+           x1  (car (car ends))  x2 (car (cadr ends))
+           e1  (pfl:y->elev (cadr (car ends)) g)
+           e2  (pfl:y->elev (cadr (cadr ends)) g))
+     (mapcar '(lambda (f) (list (pfl:x->sta (+ x1 (* f (- x2 x1))) g)
+                                (+ e1 (* f (- e2 e1)) add)))
+             '(0.0 0.5 1.0)))))
+
+;; (pfp:cover-verdict covers cmin) -> (verdict text)   pure -- PFSELFTEST's
+;;   covers: ((station cover-ft | nil) ...); nil = off the surface there
+(defun pfp:cover-verdict (covers cmin / off low)
+  (foreach c covers
+    (cond
+      ((null (cadr c)) (if (null off) (setq off c)))
+      ((or (null low) (< (cadr c) (cadr low))) (setq low c))))
+  (cond
+    (off (list 'unknown (strcat "cover: can't check (off the DESIGN surface at STA "
+                                (pfl:fmt-sta (car off)) ")")))
+    ((null low) (list 'unknown "cover: can't check"))
+    ((< (cadr low) (- cmin 1e-9))
+     (list 'fail (strcat "cover " (pfl:fix (cadr low) 2) " ft below " (pfl:fix cmin 2)
+                         " ft min at STA " (pfl:fmt-sta (car low)))))
+    (T (list 'pass (strcat "cover " (pfl:fix (cadr low) 2) " ft")))))
+
+;; (pfp:cover-key e g) -> what a cover answer depends on, as a fingerprint
+(defun pfp:cover-key (e g / tin)
+  (setq tin (pfp:design-tin g))
+  (pfl:fingerprint
+    (list (pfp:ends e) (pfp:dims e) (pfl:g 'cl g) tin (if tin (vl-file-systime tin))
+          (pfv:setting-text "PFCOVERMIN")
+          (mapcar '(lambda (k) (pfl:g k g)) '(leftx basey sta0 datum vscale hplot)))))
+
+;; (pfp:cover-status e g) -> (verdict text) | nil (no minimum set)
+;;   No TIN is read here: what can be told without one, else the answer kept
+;;   from the last Refresh, else 'unchecked.  Safe in a palette click.
+(defun pfp:cover-status (e g / cmin pts hit)
+  (cond
+    ((null (setq cmin (pfv:setting "PFCOVERMIN"))) nil)
+    ((null (pfl:g 'tin-design g)) (list 'unknown "cover: can't check (no DESIGN surface on this grid)"))
+    ((null (pfp:design-tin g)) (list 'unknown "cover: can't check (the DESIGN surface file isn't found)"))
+    ((= (type (setq pts (pfp:cover-points e g))) 'STR) (list 'unknown (strcat "cover: can't check (" pts ")")))
+    ((and (setq hit (assoc (pfl:handle e) *pfp-cover-memory*))
+          (= (cadr hit) (pfp:cover-key e g)))
+     (cddr hit))
+    (T (list 'unchecked "cover: not checked yet (Refresh Line)"))))
+
+;; (pfp:check-cover pairs) -> (checked failed unknown)   MEASURES cover for
+;;   ((pipe . grid) ...) and remembers each answer.  Needs Carlson: run it
+;;   inside a command.  One TIN loaded at a time.  Reads only.
+(defun pfp:check-cover (pairs / cmin by tin c r pts covers xy z n-chk n-fail n-unk)
+  (setq n-chk 0 n-fail 0 n-unk 0)
+  (if (setq cmin (pfv:setting "PFCOVERMIN"))
+    (progn
+      (foreach p pairs
+        (setq r (pfp:cover-status (car p) (cdr p)))
+        (if (and r (eq (car r) 'unknown))
+          (setq n-unk (1+ n-unk))
+          (if (setq tin (pfp:design-tin (cdr p)))
+            (setq by (if (setq c (assoc tin by))
+                       (subst (cons tin (cons p (cdr c))) c by)
+                       (cons (list tin p) by))))))
+      (foreach c by
+        (if (pfc:tin-load (car c))
+          (progn
+            (foreach p (cdr c)
+              (setq pts    (pfp:cover-points (car p) (cdr p))
+                    covers (mapcar '(lambda (q)
+                                      (list (car q)
+                                            (if (and (setq xy (pfc:cl-point (pfg:cl (cdr p)) (car q)))
+                                                     (setq z (pfc:tin-z (list (car xy) (cadr xy) 0.0))))
+                                              (- z (cadr q)))))
+                                   pts)
+                    r      (pfp:cover-verdict covers cmin)
+                    n-chk  (1+ n-chk))
+              (cond ((eq (car r) 'fail) (setq n-fail (1+ n-fail)))
+                    ((eq (car r) 'unknown) (setq n-unk (1+ n-unk))))
+              (setq *pfp-cover-memory*
+                (cons (cons (pfl:handle (car p)) (cons (pfp:cover-key (car p) (cdr p)) r))
+                      (vl-remove-if '(lambda (m) (= (car m) (pfl:handle (car p)))) *pfp-cover-memory*))))
+            (pfc:tin-unload))
+          (progn
+            (pfl:say (strcat "  ** could not load " (car c) " -- cover not checked on its pipes"))
+            (setq n-unk (+ n-unk (length (cdr c)))))))))
+  (list n-chk n-fail n-unk))
+
+;; (pfp:design-report lines) -> (pipes failed unknown)   the checks on every
+;;   pipe of these lines (nil = every line): cover measured, then each pipe
+;;   that fails or can't be checked named.  Inside a command (Carlson).
+(defun pfp:design-report (lines / idx pairs ends g ln r s n-fail n-unk sl cv)
+  (setq idx (pfg:index) n-fail 0 n-unk 0)
+  (foreach e (pfp:all)
+    (if (and (setq ends (pfp:ends e))
+             (setq g (pfp:grid-of-ends-in ends idx))
+             (setq ln (pfg:line-name g))
+             (or (null lines) (member ln lines)))
+      (setq pairs (cons (cons e g) pairs))))
+  (if (or (pfv:setting "PFSLOPEMIN") (pfv:setting "PFCOVERMIN"))
+    (progn
+      (pfl:say "")
+      (pfl:say "  Design checks (they never move a pipe):")
+      (pfp:check-cover pairs)
+      (foreach p (reverse pairs)
+        (setq sl (pfp:slope-check (car p) (cdr p))
+              cv (pfp:cover-status (car p) (cdr p))
+              s  nil)
+        (foreach r (list sl cv)
+          (if (and r (member (car r) '(fail unknown unchecked)))
+            (setq s (cons (cadr r) s))))
+        (if (vl-some '(lambda (r) (and r (eq (car r) 'fail))) (list sl cv))
+          (setq n-fail (1+ n-fail))
+          (if s (setq n-unk (1+ n-unk))))
+        (if s
+          (pfl:say (strcat "  ** pipe " (cond ((pfr:get (car p) *pf-pipe-size*)) ("")) " "
+                           (pfp:mat (car p)) " on " (pfg:line-name (cdr p))
+                           " STA " (pfl:fmt-sta (min (pfl:x->sta (car (car (pfp:ends (car p)))) (cdr p))
+                                                     (pfl:x->sta (car (cadr (pfp:ends (car p)))) (cdr p))))
+                           ": " (pfl:join-with "; " (reverse s))))))
+      (pfl:say (strcat "  " (itoa (length pairs)) " pipe(s) checked: " (itoa n-fail) " below a minimum, "
+                       (itoa n-unk) " can't be checked."))))
+  (list (length pairs) n-fail n-unk))
+
+
 (princ "\npf-pipe loaded.  PFPIPE.")
 (princ)

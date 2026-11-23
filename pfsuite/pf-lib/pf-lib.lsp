@@ -24,12 +24,29 @@
 ;; reads what it said (2026-10-30).
 (if (not (boundp '*pfl-quiet*)) (setq *pfl-quiet* nil *pfl-heard* nil))
 
+;; While *pfl-copying* is on, every line is ALSO kept in *pfl-copied*
+;; (newest first), whether or not it is printed -- the palette's footer shows
+;; what a button's run said, and the command line still gets it (V6.1,
+;; 2026-11-21).  The palette turns it on and off; nothing here calls up.
+(if (not (boundp '*pfl-copying*)) (setq *pfl-copying* nil *pfl-copied* nil))
+
 ;; (pfl:say s) -> nil   one line on the command line
 (defun pfl:say (s)
+  (if *pfl-copying* (setq *pfl-copied* (cons s *pfl-copied*)))
   (if *pfl-quiet*
     (setq *pfl-heard* (cons s *pfl-heard*))
     (prompt (strcat "\n" s)))
   (princ))
+
+;; (pfl:dict-keys dict) -> a dictionary's entry names, in dictionary order.
+;;   Shared by the line stubs (pf-index) and the saved settings (pf-defaults).
+(defun pfl:dict-keys (dict / out pending)
+  (foreach p (entget dict)
+    (cond
+      ((= (car p) 3) (setq pending (cdr p)))
+      ((and pending (member (car p) '(350 360)))
+       (setq out (cons pending out) pending nil))))
+  (reverse out))
 
 
 ;;; ==========================================================================

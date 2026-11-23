@@ -1,35 +1,9 @@
-# pf-draw.lsp — the drawing boundary (NO COMMANDS)
+# Drawing writes and command wrapper
 
-**Load position:** 8 (after pf-lib, pf-record, pf-anchor, pf-index).
-**May depend on:** pf-cfg, pf-lib.
-**Depended on by:** pf-assign, pf-struct, pf-pipe, pf-bench.
+`pf-draw.lsp` loads after pf-index. It owns drawing entity changes and dynamic-property writes. Read-only geometry and property helpers live in pf-lib; attribute and XDATA writes live in pf-record.
 
-## What it owns
+`pfd:run` wraps command work in one UNDO group and closes it after an error or Esc. `*pfd-stage*` names the current step in an error report. `pfd:try` reports a failed individual item and lets the rest of a run continue.
 
-**The only file that creates, moves or erases entities, or sets a dynamic
-property.** It does the job of V5's `pfdraw`, plus V5's `pf:run-command`: the
-one wrapper every command runs inside.
+The module inserts, moves, scales, and erases blocks; writes lines, polylines, text, and crossing dimensions; changes dynamic states; and creates needed layers. `pfd:layer` does not overwrite an existing layer's color or plot setting. `pfd:fit-end` measures and adjusts a station line's `PFTOP` end. `pfd:depth-probe` is a diagnostic check that restores its temporary change.
 
-## Public API
-
-- **The command wrapper**
-  - `pfd:run name fn`: one UNDO group around the whole command. An error or Esc still closes it, and an error names the stage it was in.
-  - `*pfd-stage*`: what the command is doing now. Each step sets it as it starts.
-  - `pfd:try label fn args`: one structure or pipe that fails is reported and skipped, and the run goes on.
-- **Dynamic properties (write):** `pfd:prop-put`, `pfd:dynprop-put`, `pfd:set-state`
-- **Entities:** `pfd:insert`, `pfd:insert-on` (scaled, on a layer), `pfd:rescale`, `pfd:move`, `pfd:erase`, `pfd:pline`, `pfd:to-back` (draw order)
-- **Layers:** `pfd:layer`: create-only; an existing layer keeps its colour and plot flag
-- **Station line:**
-  - `pfd:fit-end`: fits the station line's top with PFTOP. It measures, sets, measures again, and self-corrects the direction.
-  - `pfd:depth-probe`: PFGATE's check that the PFDEPTH grip moves the barrel. It nudges the value and puts it back.
-
-## Rules
-
-- **No commands here.** Commands live in their own modules and call down.
-- **Every command body runs inside `pfd:run`.**
-- **The tool never sets PFDEPTH.** The barrel depth is the drafter's, set with the grip (Jake, 2026-10-15).
-- **Reading dynamic properties is pf-lib's,** not this file's.
-
-## Added 2026-11-20
-
-- `pfd:line`, `pfd:text`, `pfd:dim-vert` (a vertical dimension with its text replaced, current dimension style), `pfd:color` -- for what PFXLABEL draws.
+This file has no user command. It never sets PFDEPTH during normal work; that grip belongs to the drafter.

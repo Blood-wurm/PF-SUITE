@@ -4,9 +4,8 @@
 ;;; APPLOAD this one file.  The loader uses *pf-root*, the support path, or
 ;;; this checkout's location to find the modules.
 ;;;
-;;; THE LOAD ORDER IS THE DEPENDENCY ORDER (V5's guardrail): a file may only
-;;; use files loaded ABOVE it.  Each module's README.md says what it may
-;;; depend on.
+;;; THE LOAD ORDER IS THE DEPENDENCY ORDER: a file may only use files loaded
+;;; above it.  Each module's README.md describes its behavior and limits.
 ;;;
 ;;;   shared, read only   pf-cfg -> pf-lib -> pf-mats (the pipe table)
 ;;;                       -> pf-carlson -> pf-files
@@ -19,8 +18,8 @@
 ;;;                       pf-grid (PFSETUP / PFREMOVE: the grid anchors)
 ;;;   the palette         pf-palette (PFPALETTE, and the Defaults dialog /
 ;;;                       PFDEFAULTS -- calls every command module)
-;;;   workbench           pf-bench -- NOT part of the suite, deleted whole
-;;;                       when V6 ships; nothing above may call into it.
+;;;   workbench           pf-bench -- loaded last for development checks;
+;;;                       nothing above may call into it.
 ;;;
 ;;; A reserved module is loaded as soon as its file exists.
 ;;; ==========================================================================

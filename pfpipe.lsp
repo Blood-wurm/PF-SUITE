@@ -11,7 +11,10 @@
 ;;;          Size, material and exaggeration are remembered for the session.
 ;;;
 ;;; Needs:
-;;;   - a PFSUITE_PIPE block already in the drawing (insert one once, erase it)
+;;;   - the PFSUITE_PIPE block.  If the drawing hasn't got it, PIPEPRO loads
+;;;     the definition from the block drawing named by *ppr-block-file* (SETUP,
+;;;     below) -- nothing is placed.  A block already in the drawing is never
+;;;     redefined; to pick up a changed server copy, redefine it by hand.
 ;;;   - its sidecar, pfpipe.csv, the pipe table -- KEEP IT BESIDE THIS FILE.
 ;;;     Found in *ppr-dir* (below), else anywhere on the support path.  Moving
 ;;;     the pair?  Change *ppr-dir*, or put the folder on the support path.
@@ -38,9 +41,18 @@
 
 (vl-load-com)
 
-;; The folder holding pfpipe.lsp and pfpipe.csv.  AutoLISP can't see where a
-;; file was loaded from, so it is written here.  Change it if the pair moves.
+;;; ---- SETUP: the only lines to edit when PipePro moves --------------------
+;;; AutoLISP can't see where a file was loaded from, so the paths are written
+;;; here.  Use double backslashes.  A server share works:  "\\\\server\\share\\..."
+
+;; The folder holding pfpipe.lsp and pfpipe.csv.
 (setq *ppr-dir* "C:\\Users\\Guest01\\Data\\LIBRARY\\LISP\\PFSUITE\\V6")
+
+;; Full path to the pipe block drawing -- any folder, any file name; it comes
+;; in as PFSUITE_PIPE whatever the file is called.  Leave "" to look for
+;; PFSUITE_PIPE.dwg in *ppr-dir*, then on the support path.
+(setq *ppr-block-file* "")
+;;; ---- end of SETUP ---------------------------------------------------------
 
 (if (not (boundp '*ppr-ve*))   (setq *ppr-ve*   10.0))   ; vertical exaggeration
 (if (not (boundp '*ppr-size*)) (setq *ppr-size* nil))    ; nominal, inches
@@ -168,6 +180,45 @@
 ;;; ==========================================================================
 ;;; The block
 ;;; ==========================================================================
+
+;; -> the block drawing's full path | nil.  Order: *ppr-block-file*, then
+;;    PFSUITE_PIPE.dwg in *ppr-dir*, then PFSUITE_PIPE.dwg on the support path.
+;;    A set path that isn't found is reported, so a stale copy found further
+;;    down the list is never used silently.
+(defun ppr:block-file-path ( / wanted p)
+  (setq wanted (and (= (type *ppr-block-file*) 'STR)
+                    (/= "" (vl-string-trim " \t" *ppr-block-file*))))
+  (cond
+    ((and wanted (setq p (findfile *ppr-block-file*))) p)
+    ((or (and (= (type *ppr-dir*) 'STR)
+              (setq p (findfile (strcat *ppr-dir* "\\" *ppr-block* ".dwg"))))
+         (setq p (findfile (strcat *ppr-block* ".dwg"))))
+     (if wanted
+       (prompt (strcat "\nPIPEPRO: block drawing not found at " *ppr-block-file*
+                       "\n  using " p " instead.")))
+     p)))
+
+;; T when the drawing has the block -- loading its definition from the block
+;; drawing first if it hasn't.  Nothing is placed: -INSERT "NAME=file" defines
+;; the block under NAME, then the insertion-point prompt is cancelled.  Only
+;; runs when the block is missing, so AutoCAD never asks "Redefine it?".
+(defun ppr:ensure-block ( / path echo)
+  (cond
+    ((tblsearch "BLOCK" *ppr-block*) T)
+    ((null (setq path (ppr:block-file-path)))
+     (prompt (strcat "\nPIPEPRO: no " *ppr-block* " block in this drawing, and no block drawing found."
+                     "\n  Set *ppr-block-file* at the top of pfpipe.lsp (now: \""
+                     (vl-princ-to-string *ppr-block-file*) "\")."))
+     nil)
+    (T
+     (setq echo (getvar "CMDECHO"))
+     (setvar "CMDECHO" 0)
+     (command "_.-INSERT" (strcat *ppr-block* "=" path))
+     (command)                                ; cancel at the insertion point
+     (setvar "CMDECHO" echo)
+     (if (tblsearch "BLOCK" *ppr-block*)
+       (progn (prompt (strcat "\nPIPEPRO: loaded " *ppr-block* " from " path)) T)
+       (progn (prompt (strcat "\nPIPEPRO: AutoCAD would not load " *ppr-block* " from " path)) nil)))))
 
 (defun ppr:nospace (s) (vl-list->string (vl-remove 32 (vl-string->list s))))
 
@@ -459,8 +510,7 @@
     ((= 1 (getvar "BLOCKEDITOR")) (prompt "\nPIPEPRO: close the Block Editor first."))
     ((and (= 0 (getvar "TILEMODE")) (= 1 (getvar "CVPORT")))
      (prompt "\nPIPEPRO: work in model space (double-click into the viewport)."))
-    ((null (tblsearch "BLOCK" *ppr-block*))
-     (prompt (strcat "\nPIPEPRO: no " *ppr-block* " block in this drawing.  Insert one once, then erase it.")))
+    ((not (ppr:ensure-block)))   ; it says what went wrong
     ((null tbl)
      (prompt (strcat "\nPIPEPRO: can't find pfpipe.csv.  Keep it beside pfpipe.lsp and set *ppr-dir*"
                      " at the top of pfpipe.lsp (now: " (vl-princ-to-string *ppr-dir*) ").")))

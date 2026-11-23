@@ -112,8 +112,33 @@ pfsetup_main : dialog {
   : row {
     fixed_width = true;
     alignment   = "centered";
+    : button { key = "s_delete"; label = "Delete Line..."; width = 15; }
     : button { key = "accept"; label = "OK";     mnemonic = "O"; width = 11; is_default = true; }
     : button { key = "cancel"; label = "Cancel"; mnemonic = "C"; width = 11; is_cancel  = true; }
     : button { key = "help";   label = "Help";   width = 11; }
+  }
+}
+
+// Delete Line's confirmation (V6.1, 2026-11-21).  pfn:delete-confirm fills
+// the six rows from pfn:line-footprint: the line, what is erased (anchors
+// only), what is taken off the line, what stays in place released.  Cancel
+// is the default -- Enter never deletes.
+pfsetup_delete : dialog {
+  label = "PFSUITE - Delete Line";
+  : boxed_column {
+    label = "Delete Line";
+    : text { key = "d_line"; label = ""; width = 90; }
+    : text { key = "d1";     label = ""; width = 90; }
+    : text { key = "d2";     label = ""; width = 90; }
+    : text { key = "d3";     label = ""; width = 90; }
+    : text { key = "d4";     label = ""; width = 90; }
+    : text { key = "d5";     label = ""; width = 90; }
+  }
+  spacer;
+  : row {
+    fixed_width = true;
+    alignment = "centered";
+    : button { key = "d_yes";  label = "Delete Line"; width = 16; }
+    : button { key = "cancel"; label = "Cancel";      width = 12; is_default = true; is_cancel = true; }
   }
 }

@@ -1,74 +1,25 @@
-# pf-xing.lsp — PFXLABEL: crossings, clearance checked
+# PFXLABEL: profile crossings
 
-**Load position:** after pf-invert, before pf-refresh.
-**May depend on:** everything up to pf-invert.
-**Depended on by:** pf-refresh, pf-palette, pf-bench.
+`pf-xing.lsp` loads after pf-invert. **Find Crossings** on the Run tab, or command-line `PFXLABEL`, finds crossings for one selected line. PFREFRESH updates existing marks after pipe changes; it does not find new ones.
 
-## What it owns
+## Finding and checking
 
-**PFXLABEL** (Jake, 2026-11-20) on **one line** — the one picked in the
-palette (Crossings button), or clicked at the command line. Drawing-wide may
-come later.
+The tool finds places where another line's `.cl` crosses this line's `.cl`. It skips tie-ins near line ends and junctions near plan structures. The crossing pipe comes from the other line's own `PFSUITE_PIPE` blocks. Without a pipe block there, no crossing mark is drawn.
 
-1. **Finding them** (V5's discovery): every place another line's `.cl` crosses this one's. Not within 2 ft of either line's end (a tie-in), not within 5 ft of a plan structure (a junction) — each skip is said.
-2. **The crossing pipe** comes from **that line's own `PFSUITE_PIPE` blocks**, on its own grid. **No pipe block there, nothing is drawn.**
-3. **This line's pipe** at the crossing, from its pipe blocks.
-4. **One `PFSUITE_XING` block** per crossing, inserted at the crossing pipe's **invert**.
-5. **The clearance, outside to outside**, from both pipe blocks' `PFID` / `PFOD`:
+One `PFSUITE_CROSSING` block is placed at the crossing pipe's inside invert. Clearance is measured **outside to outside** from the pipes' `PFID` and `PFOD` attributes. Below drawing-wide `PFCLRMIN`, the mark is red and reports FAIL. Unknown wall thickness is red and cannot pass. Within `PFCLRWARN` of the minimum, the tool adds a clearance dimension and wall note. The Run list includes crossing rows and status. Rerunning Find Crossings updates matched marks, adds new ones, and removes marks no longer found.
 
-| Result | What shows |
-|---|---|
-| Short of `PFCLRMIN` | Block and drawings **red**; `FAIL  15.6"` in the palette and the run |
-| A wall not known (`PFOD` blank) | **Red**; `FAIL  wall unknown` — never a pass |
-| Otherwise | `PASS  22.4"` |
-| Within `PFCLRWARN` of the minimum, or short | A **dimension** from the outside of this line's pipe wall, `PFCLRMIN` long, toward the crossing pipe, reading `18" MIN.`; ticks at that wall's inside and outside, and the note `2.5" WT. (18" RCP)` |
-| No pipe on this line there | Drawn, clearance not checked, said |
+The label names the crossing line and shows the crossing pipe's size and material. It sits to the right by default, scaled by plot text height. Moving `PFLEAD` to the left switches sides; dragging it elsewhere keeps the chosen spot and adds a leader. Hand-edited label text stays.
 
-`PFCLRMIN` (18) and `PFCLRWARN` (6) are settings — the Defaults dialog, by line, utility or drawing.
+## Block contract
 
-**Run again:** the same crossings are updated (matched by crossing line and
-station), new ones placed, ones no longer there (or with no pipe block now)
-erased. **PFREFRESH keeps every crossing block up to date** when a pipe at it
-changes — on a Line refresh of either line. Only PFXLABEL finds new crossings.
+The canonical file is `blocks/PFSUITE_CROSSING.dwg`. `PFID_X/Y` and `PFOD_X/Y` control the inner and outer ellipse radii. `PFID_INVERT_MOVE` holds the inner invert at the insertion point. `Visibility1` has WALL ON and WALL OFF; WALL OFF is used when OD is unknown. The wall hatch is associative and refills on REGEN. Visible attributes are `PFLABEL` and `PFLABEL2`; hidden values include `PFTYPE`, `PFSIZE`, `PFMAT`, `PFINV`, and `PFCLR`. These block details reflect the last CAD inspection on 2026-11-22; verify any later BEDIT changes in the saved DWG.
 
-## The label
+Sizing resets the dynamic block, sets the Y radii, measures the result, and adjusts X radii if needed. It reports a size it cannot draw. The current block's four scale actions are uniform, drafted for ×10 vertical exaggeration; other exaggerations are unsupported. The wall state is set after sizing because reset returns it to WALL OFF.
 
-- **Rows:** V5's wording by the crossing line's utility — `PROP. WATER MAIN 'A'` — then the crossing pipe block's size and material, `16" C900 DR 14 PVC` (the block is the source).
-- **Station text:** V5's vertical `4+50.00 PROP. WATER CROSSING` at the bottom of the station line, which runs from below the grid up to the grid top.
-- **Placement:** left of the ellipse by default; the flip grip puts it right. Dragged anywhere else, it stays there on a **leader** the tool draws — its arrow 1 unit (at 1"=20') off the ellipse, half way up.
-- Text typed over is kept.
+## Remaining limits
 
-## The block (Jake draws it)
+- A resized hatch may show its old fill until REGEN. PFXLABEL should run one REGEN after a run that changes crossing sizes.
+- PFGATE still checks x5/independent-axis behavior and reads hatch fill before REGEN, so those reports can be false failures for this accepted ×10 block. Its crossing check needs updating.
+- The station line (`PFTOP`/`PFBOT`) and `PFSTA1` text are deferred. PFGATE reports them and cannot pass the final crossing gate until they exist.
 
-`PFSUITE_XING`, insertion point at the pipe's **invert**. Everything on layer 0, colour **ByBlock**.
-
-| Name | Type | Action | Notes |
-|---|---|---|---|
-| `PFDIA` | Linear | **Scale** on the ellipse, base **Independent** at the insertion point | Ellipse drawn 1 ft wide x 10 tall, bottom on the insertion point. Value = inside diameter, ft |
-| `PFODTOP` | Linear, vertical, up from the insertion point | **Move** on the top tick | Value = (ID + wall) x 10. Tool-set |
-| `PFODBOT` | Linear, vertical, down from the insertion point | **Move** on the bottom tick | Value = wall x 10. Tool-set |
-| `PFTOP` | Linear, vertical | **Stretch** the station line's top | To the grid top |
-| `PFBOT` | Linear, vertical | **Stretch** the station line's bottom, **Move** `PFSTA1` | Below the grid |
-| `PFLEAD` | Point | **Move** on `PFLABEL`, `PFLABEL2` | The label grip |
-| `PFFLIP` | Flip, line vertical through the insertion point | **Flip** on both label rows and `PFLEAD` | Left / right |
-
-Attributes: `PFLABEL`, `PFLABEL2`, `PFSTA1` (visible); `PFTYPE`, `PFSIZE`,
-`PFMAT`, `PFINV`, `PFCLR` (hidden). Ticks: short level lines, fixed length.
-
-**PFGATE** checks it: every tag and parameter, PFDIA growing the ellipse up,
-PFTOP / PFBOT moving the station line.
-
-## Public API
-
-`pfk:run` (the work, no questions — the palette and PFSELFTEST), `pfk:main`,
-`pfk:all`, `pfk:on-line`, `pfk:rec`, `pfk:extras`, `pfk:extras-of`,
-`pfk:data`, `pfk:fp`, `pfk:update`, `pfk:stamp`, `pfk:status`, `pfk:clear`,
-`pfk:hits`, `pfk:find`, `pfk:pipe-at`, `pfk:words`, `pfk:setting`
-
-## Rules
-
-- **Pipe blocks only.** No pipe block, no crossing.
-- **Everything the tool draws carries the block's handle** (XDATA `XING`): redrawn with its block, erased when the block is gone.
-- **The ellipse assumes x10.** A grid with another exaggeration is said.
-
-PFSELFTEST group 19.
+PFSELFTEST group 19 covers crossing logic. Live Find Crossings and repeated discovery still need a Carlson drawing test; the source and ×10 sizing checks alone do not prove discovery behavior.

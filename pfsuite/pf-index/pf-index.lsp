@@ -323,14 +323,8 @@
 ;;;   kind read|walked   verts ((x y sta) ...)   box   from "grid"|"stub"
 ;;; READS ONLY.
 
-;; (pfm:dict-keys dict) -> the entry names, in dictionary order
-(defun pfm:dict-keys (dict / out pending)
-  (foreach p (entget dict)
-    (cond
-      ((= (car p) 3) (setq pending (cdr p)))
-      ((and pending (member (car p) '(350 360)))
-       (setq out (cons pending out) pending nil))))
-  (reverse out))
+;; (pfm:dict-keys dict) -> the entry names, in dictionary order (pf-lib's)
+(defun pfm:dict-keys (dict) (pfl:dict-keys dict))
 
 ;; (pfm:stubs) -> ((util name cl) ...) V5's STUB_ records | nil
 (defun pfm:stubs ( / d cur data out)
@@ -679,7 +673,8 @@
                                    (setq f (cdr (assoc (car m) (car faces)))
                                          o (assoc (car m) old))
                                    (append m (list (cond ((and f (/= (type f) 'STR)) (car f))
-                                                         ((and o (pfm:memb-face o)))
+                                                         ;; IF, not AND -- AND returns T, not the face
+                                                         ((if o (pfm:memb-face o)))
                                                          ("")))))
                                 memb)
                   face  (cdr faces))
@@ -718,8 +713,7 @@
 ;; (pfm:plan-label-ht e) -> the plan label's text height for this structure:
 ;;   the PFPLANHT setting of its first line (pf-defaults), else built in
 (defun pfm:plan-label-ht (e)
-  (cond ((pft:num (pfv:effective (car (car (pfr:memb-get e))) *pf-setting-kind* ""
-                                 "PFPLANHT" (cdr (assoc "PFPLANHT" *pf-settings*)))))
+  (cond ((pfv:setting "PFPLANHT"))
         ((pft:num (cdr (assoc "PFPLANHT" *pf-settings*))))))
 
 ;; (pfm:plan-label e) -> 'none (the block has no PFPLABEL yet) | a list of

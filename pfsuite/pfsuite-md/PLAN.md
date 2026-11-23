@@ -350,7 +350,7 @@ remaining structure types come in alongside.
 4. **The inlet family** for `PFINLET`: does `PFTYPE` alone settle it?
 5. ~~**Faces at a junction and at a line's end.**~~ Decided 2026-11-20: a face per line, the outlet always the back (§2.2).
 6. ~~**Junction depth.**~~ Decided 2026-11-20: each grid's copy has its own bottom, and that line's inverts come from it — different depths on different sheets are intended.
-7. ~~**Crossing blocks.**~~ Decided 2026-11-20: one `PFSUITE_XING`, label inside it (§12).
+7. ~~**Crossing blocks.**~~ Decided 2026-11-20: one `PFSUITE_CROSSING`, label inside it (§12).
 8. ~~**Material wall thicknesses.**~~ Decided 2026-11-20: the pipe table with ID and OD per material and size (§12). Most walls still to fill in.
 11. **Inverts on the plan block** (for Edit Attributes and PFEXPORT): needs hidden plan attributes, and the Pro-Flow importer to agree to a new field.
 9. **Are three station rows enough?** That's a junction on three lines.
@@ -425,8 +425,8 @@ Details in each module's README. PFSELFTEST groups 15–19.
 2. **Invert rows** (pf-invert, run by PFREFRESH): a pipe attached → its end's elevation, with its size; no pipe on a side → the structure's bottom on that side (SMH: the floor at that wall). A pipe belongs to the structure whose wall its end sits at; left wall = outlet. An end below the bottom is reported. V5's layout. Not on the plan block yet (§9 Q11).
 3. **The pipe table** (pf-mats, `pf-cfg\pf-pipes.csv`): materials and sizes with ID and OD, kept with the lisp, edited by hand, one Default per utility. Carlson's files are no longer read. The pipe block carries hidden `PFID` / `PFOD`, filled from it; a typed value is kept. Seeded from Carlson; walls blank except RCP (ASTM C76 Wall B, to check).
 4. **The plan label** (pf-index, PFASSIGN): `PFPLABEL` shows the name on the plan block (a visible attribute; blank on profile copies, so no visibility state needed); height from the `PFPLANHT` setting (2.4); a dragged label is put back after ATTSYNC. `PFMKPLABEL` (bench) adds it in BEDIT, once per block definition, with its rotate grip: a Rotation parameter `PFPLROT` on the block's base point and a Rotate action on the label, so the drafter swings it around the structure (scripted through BPARAMETER / BACTION; anything AutoCAD still asks is handed to the drafter). PFGATE checks the grip turns the label about the base point.
-5. **Crossings — PFXLABEL** (pf-xing): on one line; pipe blocks only; one `PFSUITE_XING` block per crossing at the crossing pipe's invert; outside-to-outside clearance; short or unknown → red + a palette warning; within `PFCLRWARN` of `PFCLRMIN` → a dimension and the wall note. PFREFRESH keeps them up to date.
+5. **Crossings — PFXLABEL** (pf-xing): on one line; pipe blocks only; one `PFSUITE_CROSSING` block per crossing at the crossing pipe's invert; outside-to-outside clearance; short or unknown → red + a palette warning; within `PFCLRWARN` of `PFCLRMIN` → a dimension and the wall note. PFREFRESH keeps them up to date.
 
 **Settings** (Defaults dialog, by line / utility / drawing): `PFPLANHT` 2.4, `PFCLRMIN` 18", `PFCLRWARN` 6".
 
-**For Jake to do in the Block Editor / Studio:** `PFID` + `PFOD` on `PFSUITE_PIPE` (PFMKPIPEATT); `PFPLABEL` on every structure definition (PFMKPLABEL in BEDIT); the `PFSUITE_XING` block (pf-xing README); `btnXing` on the palette's Run tab (pf-palette README).
+**For Jake to do in the Block Editor / Studio:** `PFID` + `PFOD` on `PFSUITE_PIPE` (PFMKPIPEATT); `PFPLABEL` on every structure definition (PFMKPLABEL in BEDIT); the `PFSUITE_CROSSING` block (pf-xing README); `btnXing` on the palette's Run tab (pf-palette README).

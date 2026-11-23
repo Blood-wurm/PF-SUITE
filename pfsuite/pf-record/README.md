@@ -1,46 +1,16 @@
-# pf-record.lsp — the structure record
+# Attributes and stored records
 
-**Load position:** 5 (after pf-cfg, pf-lib, pf-carlson, pf-files).
-**May depend on:** pf-cfg, pf-lib. **pf-cfg must be loaded first**, because this file builds its stored-data key list from pf-cfg's names at load time.
-**Depended on by:** pf-defaults, pf-index, pf-struct, pf-pipe, pf-bench.
+`pf-record.lsp` loads after pf-files. It is the shared read/write boundary for block attributes, XDATA, and drawing-dictionary records. `pf-cfg.lsp` must load first because record keys are built from its names at load time.
 
-## What it owns
+Visible attributes hold values the drafter can edit or extract. XDATA holds membership (`MEMB`), the last tool-written value (`SRC`), schema, profile-to-plan links, label positions, anchor file bindings, and release status. Grid-less line stubs and saved defaults live in drawing dictionaries.
 
-**The only file that reads or writes attribute values and stored data
-(XDATA).** The record lives on one insert:
-- **Attributes:** drafter-visible, editable in Properties, and they come out in data extraction.
-- **XDATA (tool only):**
-  - `MEMB`: which lines the structure is on, and its station and offset on each
-  - `SRC`: what the tool last wrote, per tag, so a hand edit can be told apart
-  - `SCHEMA`
-  - `PLAN`, `LINE`: a profile copy's link back to its plan structure
-  - `POS`: where a label was last put
-  - on a grid anchor (2026-10-30): `CL`, `PRO-INV`, `PRO-TOP`, `TIN-EXIST`, `TIN-DESIGN`, `MATERIAL`, `SUMS`, `STAMP`
-  - `RELEASED`: left behind by PFREMOVE; every suite search skips it
-- **The drawing's own dictionary:** the grid-less line stubs, in V5's format.
+## Rules that protect edits
 
-## Public API
+- `pfr:refresh` updates a value last written by the tool and leaves a hand-typed value alone. If a value no longer matches its `SRC` record, it is adopted as a hand edit.
+- `pfr:release` marks an object left in the drawing by Delete Line or PFREMOVE. `pfr:all` skips released objects.
+- `pfr:row-for` recognizes exact suite block names and valid numeric size suffixes. It does not match arbitrary prefixes; dynamic `*U` references are resolved to effective names.
+- XDATA is chunked to stay under the 255-byte string limit. Add any new stored key to `*pfr-keys*`.
 
-- **Attributes:** `pfr:attr-ent`, `pfr:get`, `pfr:put`, `pfr:att-style`, `pfr:display-name`, `pfr:tags-ok-p`
-- **Stored data:** `pfr:xd-pairs`, `pfr:xd-get`, `pfr:xd-put`, `pfr:ser`, `pfr:deser`, `pfr:val-get`, `pfr:val-put`, `pfr:memb-get`, `pfr:memb-put`, `pfr:schema-get`, `pfr:schema-put`
-- **Released (PFREMOVE):** `pfr:released-p`, `pfr:release`. `pfr:all` never returns a released block.
-- **`pfr:all` searches our names only** (2026-11-20): `pfr:name-filter` builds the search from `*pf-blocks*`, each root, root + size, and anonymous `*U` (dynamic blocks). `pfr:row-for` still decides what is ours. PFSELFTEST group 20 checks it finds the same blocks as a search of every insert.
-- **Line stubs:** `pfr:stub-get`, `pfr:stub-put`, `pfr:stub-del` (key `STUB_<TYPE>_<NAME>`, V5's exact format, read by `pfm:stubs`)
-- **Dictionary records:** `pfr:xrec-put d key data` -- create or **replace** an XRECORD, by removing the old one and adding a new one (`entmod` on an existing XRECORD reports success and changes nothing -- PFSELFTEST group 13, 2026-11-17). Used by the line stubs and pf-defaults' saved defaults.
-- **Tool value vs hand-typed:** `pfr:src-entry`, `pfr:src-get`, `pfr:src-put`, `pfr:refresh`, `pfr:assert`
-- **Finding blocks:**
-  - `pfr:row-for`: the exact name, or the name plus a number size -- digits (`PFSUITE_DBI_04`) or a box size, digits `x` digits (`PFSUITE_HDWL_24x36`, any case; `pfr:size-p`). Never matched by prefix.
-  - `pfr:size-of`, `pfr:ours-p`, `pfr:view`, `pfr:all`, `pfr:read`, `pfr:val`
-- **Label positions:** `pfr:att-pt`, `pfr:att-place`, `pfr:att-move` (the point only -- text, height, rotation and justification untouched), `pfr:moved-p`, `pfr:pos-put`, and `pfr:moved-from-p` (the same "moved by hand?" test for any remembered point, such as the pipe's `PFLEAD` grip)
-- **Drafter inputs:**
-  - `pfr:sync-inputs`: **diagnostic only since 2026-11-17** -- production inputs come from the saved defaults (pf-defaults) and a typed value stays on its block. PFSELFTEST still uses it to build explicit inputs over its own test blocks: a new value typed on any of them goes to all of them; two different new values are reported and neither is applied.
-  - `pfr:input`: reads one input's value.
+Common entry points are `pfr:get`/`pfr:put` for attributes, `pfr:val-get`/`pfr:val-put` for records, `pfr:all` for active suite inserts, and `pfr:stub-get`/`pfr:stub-put` for line stubs. `pfr:xrec-put` replaces an entire XRECORD; `entmod` is not reliable for updating an existing one.
 
-## Rules
-
-- **`pfr:refresh` is the rule that makes reruns safe:**
-  - a tool value is rewritten on every run;
-  - a hand-typed one (ASSERTED) is never touched;
-  - a value that no longer matches what the tool last wrote is adopted as hand-typed.
-- **Stored data is chunked** under the 255-byte limit. A new key must be added to `*pfr-keys*`.
-- **ATTSYNC keeps all of it.** CBI, anchor and pipe were tested with PFSYNCTEST on 2026-10-15.
+`pfr:sync-inputs` is diagnostic only. Production labels resolve [saved defaults](../pf-defaults/README.md) per block. PFSYNCTEST checks record survival through ATTSYNC; the recorded CAD result covers CBI, anchor, and pipe blocks.

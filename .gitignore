@@ -1,13 +1,30 @@
-﻿# CAD working files and generated backups
+# AutoCAD working data and lock files
 *.bak
 *.dwl
 *.dwl2
 *.ini
 *.cdc
-*.code-workspace
 *.dwg
-!DIMBLOCK.dwg
-!PFSUITE_BLOCKS.dwg
-pfsuite/pfsuite-md/PF6PROBE.txt
+*.code-workspace
 *.pfsuite.json
 *.pfnet
+
+# Canonical block sources and the retained combined library
+!blocks/PFSUITE_BLOCKS.dwg
+!blocks/PFSUITE_ANCHOR.dwg
+!blocks/PFSUITE_CBI.dwg
+!blocks/PFSUITE_PIPE.dwg
+!blocks/PFSUITE_SMH.dwg
+!blocks/PFSUITE_CROSSING.dwg
+!blocks/PFSUITE_HDWL_*.dwg
+
+# Drawing-local Carlson data and generated diagnostics
+.pro/
+Drawings/
+ErrorReports/
+**/ErrorReports/
+__pycache__/
+*.pyc
+*.log
+*.TMP
+pfsuite/pfsuite-md/PF6PROBE.txt

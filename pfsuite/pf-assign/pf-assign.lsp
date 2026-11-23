@@ -90,23 +90,39 @@
 ;;   rims: T = read them off the grids' TINs.
 (defun pfa:run (ents rims grids) (pfa:run-for ents rims grids nil))
 
-;; (pfa:run-for ents rims grids lname) -> the same counts.  lname: one line
-;;   (the palette's Assign, 2026-11-03) -- the tree is still built as above,
-;;   so a junction's other line still numbers it, but only the structures ON
-;;   that line are written: the ones the tree finds on it, and the ones whose
-;;   record still names it (so one moved off it is caught).  nil = all.
+;; (pfa:run-for ents rims grids lname) -> the same five counts, then what
+;;   the palette reports apart from them (V6.1, 2026-11-21):
+;;     (new updated unchanged off skipped skip-notes near-count count-only)
+;;   skip-notes: why each skipped structure was skipped.  near-count: plan
+;;   structures near line lname but not on it.  count-only: legacy blocks
+;;   that take a number on lname but are never assigned.  Both 0 when lname
+;;   is nil.
+;;   lname: one line (the palette's Assign, 2026-11-03) -- the tree is still
+;;   built as above, so a junction's other line still numbers it, but only
+;;   the structures ON that line are written: the ones the tree finds on it,
+;;   and the ones whose record still names it (so one moved off it is
+;;   caught).  nil = all.
 (defun pfa:run-for (ents rims grids lname / lt lines tree res n-new n-upd n-same n-off n-skip
-                      n-nolab n-restored lab)
+                      n-nolab n-restored lab skips n-near n-count)
   (setq *pfd-stage* "building the line tree")
   (setq lt    (pfm:lines)
         lines (car lt))
   (foreach s (cdr lt) (pfl:say s))
-  (setq tree (pfm:tree lines ents))
+  (setq tree   (pfm:tree lines ents)
+        n-near 0
+        n-count 0)
   (if lname
-    (setq tree (cons (vl-remove-if-not '(lambda (row) (or (assoc lname (cadr row))
-                                                          (assoc lname (pfr:memb-get (car row)))))
-                                       (car tree))
-                     (cdr tree))))
+    (progn
+      ;; counted over the whole tree, before it is cut down to the line
+      (foreach row (car tree)
+        (cond
+          ((and (cadddr row) (assoc lname (cadr row))) (setq n-count (1+ n-count)))
+          ((and (not (cadddr row)) (not (assoc lname (cadr row))) (assoc lname (caddr row)))
+           (setq n-near (1+ n-near)))))
+      (setq tree (cons (vl-remove-if-not '(lambda (row) (or (assoc lname (cadr row))
+                                                            (assoc lname (pfr:memb-get (car row)))))
+                                         (car tree))
+                       (cdr tree)))))
 
   ;; names first, so everything after is reported under the new name
   (setq *pfd-stage* "writing the names")
@@ -123,7 +139,11 @@
               ((eq (car res) 'updated) (setq n-upd  (1+ n-upd)))
               ((eq (car res) 'same)    (setq n-same (1+ n-same)))
               ((eq (car res) 'off)     (setq n-off  (1+ n-off)))
-              (T                       (setq n-skip (1+ n-skip)))))))
+              (T                       (setq n-skip (1+ n-skip)
+                                             skips  (append skips
+                                                            (cond ((cdr res))
+                                                                  ((list (strcat "  " (pfm:who (car row))
+                                                                                 "  not a suite structure")))))))))))
 
   (if rims
     (progn
@@ -152,7 +172,7 @@
                    (itoa n-skip) " skipped."))
   (if (> (+ n-new n-upd) 0)
     (pfl:say "  Next: PFSTRUCT places any not placed yet, then PFREFRESH."))
-  (list n-new n-upd n-same n-off n-skip))
+  (list n-new n-upd n-same n-off n-skip skips n-near n-count))
 
 ;; (pfa:main) -> nil   the command body, run inside pfd:run: the question,
 ;;   then pfa:run over the whole drawing
@@ -173,9 +193,10 @@
       (pfl:say "  One UNDO takes this whole run back.")))
   (princ))
 
-;; (pfa:line lname) -> nil   the palette's Assign: one line, no questions.
-;;   Rims from the TIN are their own job (port step 5).
-(defun pfa:line (lname)
+;; (pfa:line lname) -> pfa:run-for's result | nil (refused)   the palette's
+;;   Assign: one line, no questions.  Rims from the TIN are their own job
+;;   (port step 5).
+(defun pfa:line (lname / r)
   (pfc:load)
   (cond
     ((pfc:metric-p) (pfl:say "PFASSIGN: this is a METRIC drawing.  V6 is english-only and refuses."))
@@ -183,9 +204,41 @@
     (T
      (pfl:say "")
      (pfl:say (strcat "=== PFASSIGN  line " lname " ==="))
-     (pfa:run-for nil nil nil lname)
+     (setq r (pfa:run-for nil nil nil lname))
      (pfl:say "  One UNDO takes this whole run back.")))
-  (princ))
+  r)
+
+;; (pfa:drop-line lname) -> (dropped junctions)   Delete Line's plan side
+;;   (V6.1, 2026-11-21).  Run AFTER the line's anchors and stub are gone, so
+;;   the line table no longer has it.
+;;   - Every plan structure whose MEMB names lname loses that entry now, not
+;;     at the next PFASSIGN.  Its other lines are left exactly as they were
+;;     (not re-stationed).
+;;   - Its stamp is renewed only if it was current: one already moved since
+;;     PFASSIGN stays "moved since Assign".
+;;   - A junction (other lines left) is renamed against the WHOLE remaining
+;;     line table -- BA-5/BC-1 becomes BC-1 -- and its plan label follows; a
+;;     name typed by hand is kept (pfr:refresh).  A structure on no line now
+;;     keeps its name, as PFASSIGN leaves one that went off every line.
+;;   dropped: every structure changed.  junctions: those still on a line.
+(defun pfa:drop-line (lname / dropped junctions current left tree rows)
+  (foreach e (pfm:structures)
+    (if (assoc lname (pfr:memb-get e))
+      (progn
+        (setq current (equal (pfr:stamp-get e) (pfm:plan-fp e))
+              left    (vl-remove-if '(lambda (m) (= (car m) lname)) (pfr:memb-get e)))
+        (pfr:memb-put e left)
+        (if current (pfr:stamp-put e (pfm:plan-fp e)))
+        (setq dropped (cons e dropped))
+        (if left (setq junctions (cons e junctions))))))
+  (if junctions
+    (progn
+      (setq *pfd-stage* "renaming the junctions")
+      (setq tree (pfm:tree (car (pfm:lines)) nil)
+            rows (vl-remove-if-not '(lambda (r) (member (car r) junctions)) (car tree)))
+      (foreach s (pfm:names-put (cons rows (cdr tree))) (pfl:say s))
+      (foreach e junctions (if (pfr:ours-p e) (pfm:plan-label e)))))
+  (list (reverse dropped) (reverse junctions)))
 
 (defun c:PFASSIGN ()
   (if (null pfd:run)

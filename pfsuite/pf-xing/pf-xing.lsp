@@ -11,24 +11,30 @@
 ;;;   2. the crossing pipe from THAT line's PFSUITE_PIPE blocks, on its own
 ;;;      grid, at its station -- no pipe block there, nothing is drawn
 ;;;   3. this line's pipe at the crossing, from its pipe blocks
-;;;   4. one PFSUITE_XING block per crossing, at the crossing pipe's invert:
-;;;      the inside of the pipe (an ellipse), ticks at its outside, V5's
-;;;      station line and vertical station text, and the label --
-;;;      "PROP. WATER MAIN 'A'" / the crossing pipe's size and material
+;;;   4. one PFSUITE_CROSSING block per crossing, at the crossing pipe's invert:
+;;;      the inside of the pipe (ellipse), its outside (ellipse) and the
+;;;      wall between (hatch) -- WALL OFF when the OD isn't known -- and the
+;;;      label, "PROP. WATER MAIN 'A'" / the crossing pipe's size and
+;;;      material.  (2026-11-22: the block of two ellipses.  V5's station
+;;;      line and vertical station text are DEFERRED -- drawn only when an
+;;;      insert has PFTOP / PFBOT / PFSTA1.)
 ;;;   5. the clearance, OUTSIDE to OUTSIDE (the pipe blocks' PFID / PFOD):
 ;;;        short of PFCLRMIN, or a wall not known   -> RED, and a warning
 ;;;        within PFCLRWARN of PFCLRMIN (or short)  -> a dimension from the
 ;;;                    outside of this line's pipe wall, PFCLRMIN long,
 ;;;                    reading `18" MIN.`, and a tick + note at that wall
-;;;      PFCLRMIN / PFCLRWARN are settings (Defaults), 18" and 6" built in.
+;;;      PFCLRMIN / PFCLRWARN are drawing settings (the palette's Settings
+;;;      tab, one value per drawing), 18" and 6" built in.
 ;;; Run again: the same crossings are updated (matched by the crossing line
 ;;; and station), new ones placed, ones no longer there erased.
 ;;; From then on PFREFRESH keeps every crossing block up to date when a pipe
 ;;; changes; only PFXLABEL finds new crossings (a .cl redrawn).
 ;;;
-;;; The label goes LEFT of the ellipse; the block's flip grip puts it right.
-;;; Dragged away from both, it stays where it was put, on a leader the tool
-;;; draws -- its arrow 1 unit off the ellipse, half way up (Jake).
+;;; The label goes RIGHT of the pipe by default (2026-11-22; the block has no
+;;; flip grip).  Its side is read off PFLEAD: put PFLEAD near the left-hand
+;;; spot and the label goes left.  Dragged anywhere else, it stays where it
+;;; was put, on a leader the tool draws -- its arrow 1 unit off the pipe,
+;;; half way up (Jake).
 ;;; ==========================================================================
 
 (vl-load-com)
@@ -38,9 +44,11 @@
 ;;; SECTION 1  --  Settings, words, the blocks
 ;;; ==========================================================================
 
-;; (pfk:setting tag lname) -> the setting as a number, for that line
+;; (pfk:setting tag lname) -> the setting as a number.  V6.1: ONE value per
+;;   drawing (pfv:setting) -- lname is kept for the callers and ignored, so an
+;;   old line or utility value can never override the drawing's.
 (defun pfk:setting (tag lname)
-  (pft:num (pfv:effective lname *pf-setting-kind* "" tag (cdr (assoc tag *pf-settings*)))))
+  (pfv:setting tag))
 
 ;; (pfk:words table util short) -> V5's wording for the crossing line
 (defun pfk:words (table util short / w)
@@ -201,8 +209,10 @@
     ((eq st 'ok)      (strcat "PASS  " (pfl:fix clr 1) "\""))
     ((eq st 'near)    (strcat "PASS  " (pfl:fix clr 1) "\"  (within the margin -- dimensioned)"))
     ((eq st 'low)     (strcat "FAIL  " (pfl:fix clr 1) "\"  (minimum " (rtos cmin 2 0) "\")"))
-    ((eq st 'unknown) "FAIL  wall unknown")
-    ((eq st 'nopipe)  "no pipe on this line")
+    ;; V6.1: three verdicts -- PASS, FAIL, UNKNOWN.  UNKNOWN is never a pass:
+    ;; the block still goes red and the run still warns (pfk:bad-p).
+    ((eq st 'unknown) "UNKNOWN  wall not known (PFOD blank)")
+    ((eq st 'nopipe)  "UNKNOWN  no pipe on this line")
     ("?")))
 
 ;; (pfk:bad-p st) -> T when the block goes red
@@ -261,23 +271,115 @@
             d)
           (pfl:ins e)
           (pfp:pt-get e *pf-xing-lead*)
-          (pfl:dynprop-get (vlax-ename->vla-object e) *pf-xing-flip*)
+          ;; the two ellipses' radii and the wall state (2026-11-22)
+          (mapcar '(lambda (n) (pfl:dynprop-get (vlax-ename->vla-object e) n))
+                  (list *pf-xing-id-x* *pf-xing-id-y* *pf-xing-od-x* *pf-xing-od-y*))
+          (pfp:state-now (vlax-ename->vla-object e))
           (mapcar '(lambda (tg) (list (pfr:get e tg) (pfr:att-pt e tg))) *pf-xing-tags*)
           ;; in any order: the drawing hands them back in its own
           (vl-sort (vl-remove nil
                      (mapcar '(lambda (x) (if (entget x) (cdr (assoc 10 (entget x)))))
-                             (if (and extras (= (type (car extras)) 'ENAME)) extras (pfk:extras-of e extras))))
+                             ;; the block's own list -- pfk:stamp hands '(nil) when
+                             ;; nothing was drawn, and (assoc ... '(nil)) is an error
+                             ;; (a clean PASS stopped PFXLABEL here; CAD, 2026-11-22)
+                             (if (and extras (or (null (car extras)) (= (type (car extras)) 'ENAME)))
+                               (vl-remove nil extras)
+                               (pfk:extras-of e extras))))
                    '(lambda (a b) (if (equal (car a) (car b) 1e-6) (< (cadr a) (cadr b)) (< (car a) (car b))))))))
 
-;; (pfk:mirror-p e lead ref) -> T when lead is where the tool last put the
-;;   label -- carried along with the block -- flipped to the other side of
-;;   the station line (the flip grip)
-(defun pfk:mirror-p (e lead ref / pos rode)
-  (if (and lead (setq pos (cdr (assoc (strcase *pf-xing-lead*) (pfr:pos-all e)))) (cddr pos))
-    (progn
-      (setq rode (list (+ (car pos) (- (car ref) (caddr pos)))
-                       (+ (cadr pos) (- (cadr ref) (cadddr pos)))))
-      (< (distance (list (- (* 2.0 (car ref)) (car rode)) (cadr rode)) lead) 0.01))))
+;;; ---- the block's size: two ellipses, the wall, the invert (2026-11-22) -----
+;;; Read in CAD from the saved block: PFID_X / PFID_Y and PFOD_X / PFOD_Y are
+;;; the ellipses' radii, and a move action on PFID_Y keeps the inner invert at
+;;; the insertion point.  BUT its four "X" / "Y" scale actions each scale
+;;; BOTH axes (uniform), so setting X and Y together scales twice.  So:
+;;;   1. ResetBlock -- every size back to the drafted default
+;;;   2. the Y radii only: right for this block on a x10 grid (the drafted
+;;;      ellipses are 10 times taller than wide), the invert kept by the move
+;;;   3. what is DRAWN is measured; if it isn't the size wanted -- a block
+;;;      whose X and Y scales are truly independent, or a grid that isn't x10
+;;;      -- the X radii are set too, and measured again
+;;;   4. still wrong: said, in the run, never drawn wrong silently.
+
+;; (pfk:ellipses e) -> ((rx ry cx cy) ...) every ellipse the insert DRAWS,
+;;   relative to its insertion point, in the block's own order: the INNER
+;;   first, as drafted (PFGATE checks it is the smaller at the drafted size).
+;;   Not sorted by size -- a doubled inner would swap places.  Read off the
+;;   insert's own (anonymous) definition.  The tool's inserts are never
+;;   rotated or scaled.
+(defun pfk:ellipses (e / blk base sub ed maj a b c out)
+  (setq blk  (tblobjname "BLOCK" (cdr (assoc 2 (entget e))))
+        base (cdr (assoc 10 (entget blk)))
+        sub  blk)
+  (while (and (setq sub (entnext sub)) (setq ed (entget sub)) (/= (cdr (assoc 0 ed)) "ENDBLK"))
+    (if (= (cdr (assoc 0 ed)) "ELLIPSE")
+      (setq maj (cdr (assoc 11 ed))
+            a   (distance '(0.0 0.0 0.0) maj)
+            b   (* a (cdr (assoc 40 ed)))
+            c   (mapcar '- (cdr (assoc 10 ed)) base)
+            out (cons (if (> (abs (car maj)) (abs (cadr maj)))
+                        (list a b (car c) (cadr c))
+                        (list b a (car c) (cadr c)))
+                      out))))
+  (reverse out))
+
+;; (pfk:size-off e want) -> nil when what is drawn is want | what is off, in
+;;   words.  want: (rx ry orx ory) -- orx / ory nil: the OD is not known and
+;;   the outer ellipse isn't checked (WALL OFF hides it).  The inner invert
+;;   must sit on the insertion point.
+(defun pfk:size-off (e want / el in out tol)
+  (setq el (pfk:ellipses e) in (car el) out (cadr el) tol 1e-4)
+  (cond
+    ((null in) "the block draws no ellipse")
+    ((or (> (abs (- (car in) (car want))) tol) (> (abs (- (cadr in) (cadr want))) tol))
+     (strcat "the inside ellipse is drawn " (pfl:fix (car in) 3) " x " (pfl:fix (cadr in) 3)
+             ", wanted " (pfl:fix (car want) 3) " x " (pfl:fix (cadr want) 3)))
+    ((> (abs (- (cadddr in) (cadr in))) tol)
+     (strcat "the inside invert is " (pfl:fix (- (cadddr in) (cadr in)) 3) " off the insertion point"))
+    ((null (caddr want)) nil)
+    ((null out) "the block draws no outside ellipse")
+    ((or (> (abs (- (car out) (caddr want))) tol) (> (abs (- (cadr out) (cadddr want))) tol))
+     (strcat "the outside ellipse is drawn " (pfl:fix (car out) 3) " x " (pfl:fix (cadr out) 3)
+             ", wanted " (pfl:fix (caddr want) 3) " x " (pfl:fix (cadddr want) 3)))
+    ((> (abs (- (cadddr out) (cadddr in))) tol) "the two ellipses aren't concentric")))
+
+;; (pfk:atts-keep e) -> ((tag . value) ...)   every attribute's text -- kept
+;;   across ResetBlock, whatever it does to them
+(defun pfk:atts-keep (e / a ed out)
+  (setq a (entnext e))
+  (while (and a (setq ed (entget a)) (= (cdr (assoc 0 ed)) "ATTRIB"))
+    (setq out (cons (cons (cdr (assoc 2 ed)) (cdr (assoc 1 ed))) out)
+          a   (entnext a)))
+  out)
+
+;; (pfk:size e want) -> T | why not   the ellipses to want (pfk:size-off's)
+(defun pfk:size (e want / obj kept r why)
+  (setq obj  (vlax-ename->vla-object e)
+        kept (pfk:atts-keep e))
+  ;; 1. the drafted state
+  (vl-catch-all-apply 'vla-ResetBlock (list obj))
+  (foreach k kept
+    (if (/= (pfr:get e (car k)) (cdr k)) (pfr:put e (car k) (cdr k))))
+  ;; 2. the Y radii
+  (setq r (pfp:put obj *pf-xing-id-y* (cadr want)))
+  (if (and (= r T) (cadddr want)) (setq r (pfp:put obj *pf-xing-od-y* (cadddr want))))
+  (cond
+    ((/= r T) r)
+    ((null (setq why (pfk:size-off e want))) T)
+    (T
+     ;; 3. the X radii too
+     (setq r (pfp:put obj *pf-xing-id-x* (car want)))
+     (if (and (= r T) (caddr want)) (setq r (pfp:put obj *pf-xing-od-x* (caddr want))))
+     (cond
+       ((/= r T) r)
+       ((null (setq why (pfk:size-off e want))) T)
+       (T (strcat why " -- check PFSUITE_CROSSING's scale actions (PFGATE)"))))))
+
+;; (pfk:wall obj state) -> T | why not   WALL ON / WALL OFF
+(defun pfk:wall (obj state / p)
+  (cond
+    ((null (setq p (pfl:visprop obj))) "the block has no WALL ON / WALL OFF states")
+    ((= (strcase (vl-princ-to-string (pfl:prop-get p))) (strcase state)) T)
+    (T (pfd:prop-put p state))))
 
 ;; (pfk:draw-extras e d layer bad sf ht) -> ents   the dimension, the wall
 ;;   ticks and note -- only when the clearance is within PFCLRWARN of the
@@ -313,7 +415,8 @@
 ;;   clearance, the ellipse and ticks, the station line, the label and its
 ;;   leader, the colour, and the dimension.  Text typed over is kept.
 (defun pfk:update (e ctx extras / d g x src tgt obj vs is os ws sf ht sv lab lead ref dx cy left-def
-                     right-def right dragged half top bot just tip notes r cmin bad ents gtop layer)
+                     right-def right dragged half top bot just tip notes r cmin bad ents gtop layer
+                     rx ry orx ory vr)
   (setq *pfd-stage* "reading the crossing")
   (setq d (pfk:data e ctx))
   (cond
@@ -331,36 +434,42 @@
            cmin (pfk:d 'cmin d)
            bad (pfk:bad-p (pfk:d 'st d))
            layer (cdr (assoc 8 (entget e))))
-     (if (> (abs (- vs 10.0)) 1e-6)
-       (setq notes (cons (strcat "      ** this grid is x" (rtos vs 2 2) " vertically -- the ellipse is drawn for x10")
-                         notes)))
      ;; the block at the crossing pipe's invert.  Its grips travel with it;
      ;; the label grip is read after the move and BEFORE any property change
      (setq *pfd-stage* "moving the crossing block")
      (pfd:move e (list x (pfl:elev->y (cadr src) g)))
      (setq ref  (pfl:ins e)
            lead (pfp:pt-get e *pf-xing-lead*))
-     ;; the pipe: inside (ellipse) and outside (ticks)
+     ;; the pipe: its inside and outside ellipses, radii X = dia / 24 ft, Y =
+     ;; X times the grid's exaggeration; the wall shown only when the OD is
+     ;; known -- a wall is never made up (2026-11-22)
      (setq *pfd-stage* "sizing the crossing pipe")
-     (foreach p (list (cons *pf-xing-dia* (/ is 12.0))
-                      (cons *pf-xing-odtop* (* (+ (/ is 12.0) (cond (ws) (0.0))) vs))
-                      (cons *pf-xing-odbot* (* (cond (ws) (0.0)) vs)))
-       (if (/= T (setq r (pfp:put obj (car p) (cdr p))))
-         (setq notes (cons (strcat "      " (car p) ": " r) notes))))
-     (if (null ws) (setq notes (cons "      ** the crossing pipe's wall is not known (PFOD blank) -- clearance UNKNOWN" notes)))
-     ;; V5's station line: up to the grid top, down below the grid
-     (setq *pfd-stage* "fitting the station line")
-     (setq gtop (pfg:top-at x g (cond ((pfi:c 'top ctx)) ((pfg:top-lines)))))
-     (if (/= T (setq r (pfd:fit-end e *pf-xing-top* 'top (cond (gtop) ((pfl:g 'topy g))))))
-       (setq notes (cons (strcat "      top: " r) notes)))
-     (if (/= T (setq r (pfd:fit-end e *pf-xing-bot* 'bot (- (pfl:g 'basey g) (* *pf-xing-line-ext* sf)))))
-       (setq notes (cons (strcat "      bottom: " r) notes)))
+     (setq rx  (/ is 24.0)       ry  (* rx vs)
+           orx (if os (/ os 24.0)) ory (if os (* orx vs)))
+     (if (/= T (setq r (pfk:size e (list rx ry orx ory))))
+       (setq notes (cons (strcat "      ** the crossing block's size: " r) notes)))
+     (if (/= T (setq r (pfk:wall obj (if os *pf-xing-state-wall* *pf-xing-state-nowall*))))
+       (setq notes (cons (strcat "      ** wall: " r) notes)))
+     (if (null ws) (setq notes (cons "      ** the crossing pipe's wall is not known (PFOD blank) -- WALL OFF, clearance UNKNOWN" notes)))
+     ;; DEFERRED: V5's station line, up to the grid top and down below the
+     ;; grid -- only on an insert that has it (the saved block doesn't yet)
+     (if (pfl:dynprop obj *pf-xing-top*)
+       (progn
+         (setq *pfd-stage* "fitting the station line")
+         (setq gtop (pfg:top-at x g (cond ((pfi:c 'top ctx)) ((pfg:top-lines)))))
+         (if (/= T (setq r (pfd:fit-end e *pf-xing-top* 'top (cond (gtop) ((pfl:g 'topy g))))))
+           (setq notes (cons (strcat "      top: " r) notes)))
+         (if (/= T (setq r (pfd:fit-end e *pf-xing-bot* 'bot (- (pfl:g 'basey g) (* *pf-xing-line-ext* sf)))))
+           (setq notes (cons (strcat "      bottom: " r) notes)))))
      ;; the text -- typed over is kept
      (setq *pfd-stage* "writing the crossing label")
-     (foreach p (list (cons *pf-xing-label* (pfk:words *pf-xing-line-words* (pfk:d 'util d) (pfk:d 'short d)))
-                      (cons *pf-xing-label2* (pfl:join (list (pfr:get (car src) *pf-pipe-size*) (pfp:mat (car src)))))
-                      (cons *pf-xing-sta* (pfl:join (list (pfl:fmt-sta (pfk:d 'tsta d))
-                                                          (pfk:words *pf-xing-sta-words* (pfk:d 'util d) (pfk:d 'short d))))))
+     (foreach p (append
+                  (list (cons *pf-xing-label* (pfk:words *pf-xing-line-words* (pfk:d 'util d) (pfk:d 'short d)))
+                        (cons *pf-xing-label2* (pfl:join (list (pfr:get (car src) *pf-pipe-size*) (pfp:mat (car src))))))
+                  ;; DEFERRED: the station text, when the insert has it
+                  (if (pfr:attr-ent e *pf-xing-sta*)
+                    (list (cons *pf-xing-sta* (pfl:join (list (pfl:fmt-sta (pfk:d 'tsta d))
+                                                              (pfk:words *pf-xing-sta-words* (pfk:d 'util d) (pfk:d 'short d))))))))
        (if (member (pfr:refresh e (car p) (cdr p) *pf-src-rule*) '(kept adopted))
          (setq notes (cons (strcat "      " (car p) " typed over by hand -- kept") notes))))
      (pfr:put e *pf-xing-type* *pf-xing-typename*)
@@ -370,30 +479,35 @@
      (pfr:put e *pf-xing-clr*  (cond ((pfk:d 'clr d) (pfl:fix (pfk:d 'clr d) 2))
                                      ((eq (pfk:d 'st d) 'unknown) "UNKNOWN")
                                      ("")))
-     ;; the station text hangs below the line, reading up (V5)
-     (pfr:att-place e *pf-xing-sta* (list x (pfl:end-y e 'bot)) ht (/ pi 2.0) 'MR)
-     ;; the label: left of the ellipse by default, right when flipped there,
-     ;; anywhere else on a leader
+     ;; DEFERRED: the station text hangs below the line, reading up (V5)
+     (if (and (pfr:attr-ent e *pf-xing-sta*) (pfl:dynprop obj *pf-xing-bot*))
+       (pfr:att-place e *pf-xing-sta* (list x (pfl:end-y e 'bot)) ht (/ pi 2.0) 'MR))
+     ;; the label (2026-11-22): RIGHT of the pipe by default; the side read
+     ;; off PFLEAD -- near the left-hand spot, it goes left.  Anywhere else,
+     ;; moved by the drafter, it stays there on a leader.  Every offset in
+     ;; text heights, so the rows move apart as the text grows.  Worked out
+     ;; for the NEW size: a pipe that grew moves the label out with it.
      (setq *pfd-stage* "placing the crossing label")
-     (setq cy        (+ (cadr ref) (/ (* (/ is 12.0) vs) 2.0))
-           dx        (max (* *pf-xing-label-dx* sf) (+ (/ is 24.0) sf))
-           left-def  (list (- x dx) cy)
-           right-def (list (+ x dx) cy)
-           right     (and lead (> (car lead) x))
+     (setq vr        (if os orx rx)                 ; the drawn pipe's half width
+           cy        (+ (cadr ref) ry)               ; the pipe's centre
+           dx        (max (* *pf-xing-lead-dx* ht) (+ vr (* *pf-xing-lead-clear* ht)))
+           right-def (list (+ x dx) (- cy (* *pf-xing-lead-dy* ht)))
+           left-def  (list (- x dx) (- cy (* *pf-xing-lead-dy* ht)))
+           right     (not (and lead (< (car lead) x)))
            lab       (if right right-def left-def)
            dragged   (and lead
-                          (> (distance lead lab) 0.01)
-                          (not (pfk:mirror-p e lead ref))
+                          (> (distance lead lab) (* *pf-xing-side-tol* ht))
                           (pfr:moved-from-p e *pf-xing-lead* lead ref)))
      (if dragged (setq lab lead))
-     (if (and lead (not dragged))
-       (progn
-         (pfp:pt-put e *pf-xing-lead* lab)
-         (pfr:pos-put e *pf-xing-lead* lab ref)))
-     (setq half (* 0.5 ht *pf-pipe-row-gap*)
+     ;; PFLEAD back where it belongs: the sizing above moved it (it rides the
+     ;; block's move action), and a dragged one stays where it was put
+     (if (and lead (/= T (setq r (pfp:pt-put e *pf-xing-lead* lab))))
+       (setq notes (cons (strcat "      " *pf-xing-lead* ": " r) notes)))
+     (if (and lead (not dragged)) (pfr:pos-put e *pf-xing-lead* lab ref))
+     (setq half (* *pf-xing-row-dy* ht)
            top  (list (car lab) (+ (cadr lab) half))
            bot  (list (car lab) (- (cadr lab) half))
-           just (if (> (car lab) x) 'ML 'MR))
+           just (if (>= (car lab) x) 'ML 'MR))
      (pfr:att-place e *pf-xing-label*  top ht 0.0 just)
      (pfr:att-place e *pf-xing-label2* bot ht 0.0 just)
      (if (null lead)
@@ -404,7 +518,7 @@
      (setq ents (pfk:draw-extras e d bad))
      (if dragged
        (progn
-         (setq tip (list (+ x (* (if (> (car lab) x) 1.0 -1.0) (+ (/ is 24.0) (* *pf-xing-arrow-off* sf)))) cy))
+         (setq tip (list (+ x (* (if (> (car lab) x) 1.0 -1.0) (+ vr (* *pf-xing-arrow-off* sf)))) cy))
          (if (setq r (pfd:pline (pfl:leader-path tip top (> (car lab) (car tip)) sf) layer))
            (setq ents (cons r ents)))
          (setq notes (cons "      label dragged by hand -- kept there, on a leader" notes))))

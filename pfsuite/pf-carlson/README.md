@@ -1,20 +1,7 @@
-# pf-carlson.lsp — every Carlson API call
+# Carlson API boundary
 
-**Load position:** 3 (after pf-lib).
-**May depend on:** pf-cfg.
-**Depended on by:** pf-index, pf-assign, pf-struct.
+`pf-carlson.lsp` loads after pf-mats. It is the only module that calls `cf:road_api` or `cf:dtm_api`; its wrappers return plain data or nil instead of passing API error objects through the suite.
 
-## What it owns
+Use `pfc:load` and `pfc:ready-p` before work requiring Carlson. `pfc:metric-p` guards the English-unit workflow. Centerline readers are `pfc:cl-range`, `pfc:cl-locate` (negative offset is left), and `pfc:cl-point`. Surface readers are `pfc:tin-load`, `pfc:tin-z`, and `pfc:tin-unload`.
 
-**The only file that names `cf:road_api` or `cf:dtm_api`.** Every wrapper
-returns plain data or nil, never an error object.
-
-## Public API
-
-- **Setup:** `pfc:load`, `pfc:ready-p`, `pfc:metric-p`
-- **Centerlines:** `pfc:cl-range`, `pfc:cl-locate` (signed offset: left is negative), `pfc:cl-point`
-- **Surfaces:** `pfc:tin-load`, `pfc:tin-unload`, `pfc:tin-z`
-
-## Rules
-
-- **A failed location request makes Carlson print to the command line,** below LISP, where it can't be stopped. Callers asking about many structures need a pre-filter first. V5 used a corridor around the `.cl` shape.
+Carlson can print a failed location request directly to the AutoCAD command line. Callers checking many structures should first narrow candidate points against the `.cl` geometry.

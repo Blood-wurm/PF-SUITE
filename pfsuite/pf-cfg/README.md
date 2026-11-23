@@ -1,25 +1,9 @@
-# pf-cfg.lsp — constants and names
+# PFSUITE names and constants
 
-**Load position:** 1.
-**May depend on:** nothing.
-**Depended on by:** everything.
+`pf-cfg.lsp` loads first. It defines the block, attribute, dynamic-property, visibility, and stored-data names used by the suite. It also holds label wording, scales, tolerances, block type rules, and drawing-setting defaults.
 
-## What it owns
+These names are a drawing contract. Changing a stored name or meaning requires a schema change, not a cosmetic edit. Suite blocks use exact `PFSUITE_<NAME>` names, optionally with a recognized numeric size suffix. `PFSUITE_CROSSING` is the canonical crossing block.
 
-Every name typed into the Block Editor, plus the rule tables:
-- block names, attribute tags, dynamic parameters and visibility states;
-- the stored-data keys;
-- the label wording and defaults;
-- the scales and tolerances.
+Current drawing settings include plan label height (`PFPLANHT`), minimum vertical crossing clearance (`PFCLRMIN`), warning band (`PFCLRWARN`), minimum pipe slope (`PFSLOPEMIN`), and minimum cover (`PFCOVERMIN`). Pipe sizes and materials come from `pf-cfg/pf-pipes.csv`, read by pf-mats. Unknown wall thickness stays unknown.
 
-## Rules
-
-- **The name contract.** No other file contains these strings as literals.
-- **Once a drawing carries a name, changing it is a `*pf-schema*` bump,** not a tidy-up.
-- **Every block is `PFSUITE_<NAME>`.** Names are matched exactly, or as the name plus a number size, never by prefix.
-- **Text scales with the horizontal plot scale only:** `sf = HPLOT / 20`, text height `1.60 x sf`, and every spacing is a multiple of the text height (as in V5).
-
-## Added 2026-11-20
-
-- Faces: `*pf-face-out*`, `*pf-face-opposite*`. Inverts: `*pf-inv-wall-tol*` `*pf-inv-rim-tol*` `*pf-inv-below-tol*` `*pf-inv-first-shift*` `*pf-smh-barrel-r*`. Plan label: `*pf-tag-plan-label*`. Settings: `*pf-settings*` (PFPLANHT, PFCLRMIN, PFCLRWARN). Pipe: `*pf-pipe-id*` `*pf-pipe-od*`. SECTION 10 the pipe table, SECTION 11 crossings (`PFSUITE_XING` and its names). XDATA `XING`. `*pf-fp-ver*` 6.
-- Carlson's pipe library names (`*pf-lib-pipesize*`, `*pf-lib-pipen*`) are gone.
+Profile text scales from the horizontal plot scale. The plan label height uses its drawing setting. See the corresponding module README before changing a rule here.

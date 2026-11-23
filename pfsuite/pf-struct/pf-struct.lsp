@@ -371,7 +371,8 @@
 (defun pfs:face-for (plan lname / m)
   (cond
     ((pfr:asserted-p plan *pf-tag-face*) (pfr:get plan *pf-tag-face*))
-    ((and (setq m (assoc lname (pfr:memb-get plan))) (pfm:memb-face m)))
+    ;; IF, not AND -- AND returns T, not the face (V6.1 static check, 2026-11-21)
+    ((if (setq m (assoc lname (pfr:memb-get plan))) (pfm:memb-face m)))
     ((pfr:get plan *pf-tag-face*))))
 
 ;; (pfs:cone-state s) -> the *pf-states-cone* name PFSIZE s spells | nil

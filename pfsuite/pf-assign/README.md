@@ -1,43 +1,14 @@
-# pf-assign.lsp — PFASSIGN: the plan side
+# PFASSIGN: plan structures
 
-**Load position:** 9 (after pf-draw).
-**May depend on:** pf-cfg, pf-lib, pf-carlson, pf-files, pf-record, pf-anchor, pf-index, pf-draw.
-**Depended on by:** nothing.
+`pf-assign.lsp` loads after pf-draw. On the V6.1 Setup tab, select a line and choose **Assign Structures** after placing plan blocks. Command-line `PFASSIGN` can assign across the drawing.
 
-## What it owns
-
-**PFASSIGN,** drawing-wide. No grid pick, no selection (Jake, 2026-10-27).
-It goes by line membership: pf-index's line tree finds every line every plan
-structure is on, and PFASSIGN writes, on each structure that changed:
-- its **name** (`BA-5/BC-1`), the line tree's (`pfm:names-put`);
-- its **lines**, each with station and offset (MEMB), every line of its own utility;
-- what it is: PFVIEW, PFTYPE, and PFSIZE from a sized block name;
-- its **face** (CBI), read off its through-line (`pfm:face-of`);
-- its **rim** from the grids' TINs, only when you say Yes.
-
-The run: **PFASSIGN, PFSTRUCT, PFREFRESH.** After a plan edit: PFASSIGN, then
-PFREFRESH.
-
-**The command is split** (2026-10-30): `pfa:main` asks the rims question;
-`pfa:run ents rims grids` does the work and returns
-`(assigned updated unchanged off skipped)`. `ents` nil = every plan structure;
-a list = number and write only those (PFSELFTEST group 7, on its own test
-lines). `pfa:run-for ents rims grids lname` writes only the structures on
-line `lname` (the tree still numbers every line, so a junction's other line
-counts); `pfa:line lname` is the palette's Assign button (2026-11-03).
+Assignment uses [pf-index](../pf-index/README.md) to determine each structure's lines and stations. It writes the built name, membership, type, view, size, face, and optionally rim elevation. The palette reports how many structures were assigned to the selected line. A junction can retain membership on another line while this one is changed or deleted.
 
 ## Rules
 
-- **It stays** (Jake, 2026-10-22), and owns the plan side; PFREFRESH is profile only (2026-10-27).
-- **Changed only.** A structure not moved, turned or put on another line since PFASSIGN last stamped it is left alone.
-- **Moved:** re-stationed. **Left a line:** that line is dropped, and PFREFRESH erases its copy there.
-- **Anything typed by hand is kept:** name, face, rim. A rim typed before the tool ever wrote one is marked as typed, not overwritten.
-- **Rims:** one Yes/No per run, asked only when some grid has a TIN that can be found. Each rim comes off the TIN of the grid that shows the structure (its first line A–Z with one). Outside the surface, the rim is left as it is. Until V5's PFGL comes over.
-- **Face:** one per structure, from the one line that runs on both sides of it. A structure at the very end of its only line, or with two lines running through it, is named in the run -- set PFFACE by hand.
-- **Headwalls** (`*pf-count-only*`) take their number but are never assigned.
-- One UNDO takes the whole run back.
+- Only changed structures are written. Moved structures get new stations; a structure that leaves a line loses that membership. PFREFRESH then removes or updates its profile copy.
+- Hand-typed names, faces, and rims stay. A rim is sampled only when requested and a suitable grid TIN can be found; outside that surface, the existing rim remains.
+- An ambiguous face is reported for manual entry. Legacy count-only headwalls affect numbering but are not assigned.
+- Plan labels receive the structure name at drawing-wide `PFPLANHT` height. A dragged label position survives ATTSYNC.
 
-## Added 2026-11-20
-
-- **Faces per line** (pf-index): each line's face on its MEMB entry, reported per line.
-- **The plan label:** every plan structure in the run gets PFPLABEL = its name, at the PFPLANHT setting's height (2.4 built in); a label dragged then reset by ATTSYNC is put back. Blocks without PFPLABEL yet are counted and named once.
+The palette sequence is **Assign Structures → New Structure**; New Structure refreshes that line after placement. After a plan edit, assign again before Refresh Line. `pfa:line` is the palette entry point; `pfa:run-for` limits writes to one line while preserving drawing-wide numbering. PFSELFTEST group 7 exercises assignment.

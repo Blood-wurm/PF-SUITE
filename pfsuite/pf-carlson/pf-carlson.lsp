@@ -19,10 +19,16 @@
 (vl-load-com)
 
 ;; (pfc:load) -> nil   The two ARXes.  Idempotent.
+;;   Without Carlson there is no SCLOAD, and calling it stopped the caller
+;;   with "bad function: SCLOAD" -- the catch didn't hold it (V6.1 CAD pass,
+;;   AutoCAD 2027 without Carlson, 2026-11-21).  Now nothing is called, and
+;;   pfc:ready-p says no, so each command refuses with "Carlson isn't loaded".
 (defun pfc:load ( / dir)
-  (setq dir (if (and (boundp 'lspdir$) (= (type lspdir$) 'STR)) lspdir$ ""))
-  (vl-catch-all-apply 'scload (list (strcat dir "tri4")))
-  (vl-catch-all-apply 'scload (list (strcat dir "eworks")))
+  (if (member (type (eval 'scload)) '(SUBR EXRXSUBR USUBR))
+    (progn
+      (setq dir (if (and (boundp 'lspdir$) (= (type lspdir$) 'STR)) lspdir$ ""))
+      (vl-catch-all-apply 'scload (list (strcat dir "tri4")))
+      (vl-catch-all-apply 'scload (list (strcat dir "eworks")))))
   (princ))
 
 (defun pfc:call (fn args / r)

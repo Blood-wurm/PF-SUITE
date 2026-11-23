@@ -16,8 +16,8 @@ PFPIPE now.
 
 ## Before you start (once)
 
-1. **Current blocks.** The pipe block is `PFSUITE_PIPE` (rebuilt 10/2,
-   `PFSUITE_BLOCKS.dwg`). If the test drawing has an older pipe block or
+1. **Current blocks.** The pipe block is `PFSUITE_PIPE` (rebuilt 10/2; current
+   authoring drawing `blocks/PFSUITE_PIPE.dwg`). If the test drawing has an older pipe block or
    PFSUITE_CBI, bring the new ones in first. Grids can carry
    `PFSUITE_ANCHOR` or V5's `PF-ANCHOR`; V6 reads both.
 2. **The blocks' attributes.** PFSELFTEST says which are missing:
